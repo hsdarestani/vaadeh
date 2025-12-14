@@ -25,14 +25,16 @@ export class EventLogInterceptor implements NestInterceptor {
     if (!metadata) return next.handle();
 
     const request = context.switchToHttp().getRequest();
-    const userId = request?.user?.id ?? request?.body?.userId;
+    const userId = request?.user?.userId ?? request?.body?.userId;
     const orderId = request?.params?.id ?? request?.body?.orderId;
+    const correlationId = request?.correlationId ?? request?.headers?.['x-correlation-id'];
 
     return next.handle().pipe(
       tap(async () => {
         await this.eventLog.logEvent(metadata.eventName, {
           orderId,
           userId,
+          correlationId,
           metadata: { path: request?.url }
         });
       })

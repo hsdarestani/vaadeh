@@ -3,12 +3,16 @@ import { NestFactory } from '@nestjs/core';
 import { config } from 'dotenv';
 import { AppModule } from './app.module';
 import { WinstonLogger } from './logger/winston-logger.service';
+import { RequestLoggerMiddleware } from './logger/request-logger.middleware';
 
 config();
 
 async function bootstrap(): Promise<void> {
   const logger = new WinstonLogger();
   const app = await NestFactory.create(AppModule, { logger });
+
+  const requestLogger = new RequestLoggerMiddleware(logger);
+  app.use(requestLogger.use.bind(requestLogger));
 
   app.setGlobalPrefix('api');
   app.useGlobalPipes(
