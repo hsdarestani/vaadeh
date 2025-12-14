@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import TelegramBot from 'node-telegram-bot-api';
-import { OrderStatus } from '@prisma/client';
+import { DeliveryType, OrderStatus } from '@prisma/client';
 import { OrdersService } from '../orders/orders.service';
 
 const vendorActions = {
@@ -8,6 +8,11 @@ const vendorActions = {
   REJECT: 'reject',
   READY: 'ready',
   DELIVERED: 'delivered'
+};
+
+const VENDOR_MENU_BUTTONS = {
+  NEW_ORDERS: '📬 سفارش‌های جدید',
+  RECENT: '📦 سفارش‌های من'
 };
 
 @Injectable()
@@ -45,9 +50,28 @@ export class VendorBotService implements OnModuleInit {
       ]
     });
 
+    const sendHome = async (chatId: number) => {
+      await this.bot?.sendMessage(chatId, 'منوی وندور:', {
+        reply_markup: {
+          keyboard: [
+            [{ text: VENDOR_MENU_BUTTONS.NEW_ORDERS }],
+            [{ text: VENDOR_MENU_BUTTONS.RECENT }]
+          ],
+          resize_keyboard: true
+        }
+      });
+    };
+
     this.bot.on('callback_query', async (query) => {
       if (!query.data || !query.message) return;
       const [, orderId, action] = query.data.split(':');
+
+      const vendor = await this.orders.getVendorByChatId(query.message.chat.id);
+      const order = await this.orders.getOrder(orderId);
+      if (!vendor || !order || order.vendorId !== vendor.id) {
+        await this.bot?.answerCallbackQuery({ callback_query_id: query.id, text: 'دسترسی مجاز نیست' });
+        return;
+      }
 
       try {
         switch (action) {
@@ -58,10 +82,16 @@ export class VendorBotService implements OnModuleInit {
             await this.orders.transition(orderId, OrderStatus.REJECTED);
             break;
           case vendorActions.READY:
-            await this.orders.transition(orderId, OrderStatus.PREPARING);
+            {
+              const deliveryStatus =
+                order.deliveryType === DeliveryType.SNAPP_COD
+                  ? OrderStatus.DELIVERY_SNAPP
+                  : OrderStatus.DELIVERY_INTERNAL;
+              await this.orders.transition(orderId, deliveryStatus);
+            }
             break;
           case vendorActions.DELIVERED:
-            await this.orders.transition(orderId, OrderStatus.DELIVERED);
+            await this.orders.transition(orderId, OrderStatus.COMPLETED);
             break;
           default:
             await this.bot?.sendMessage(query.message.chat.id, 'عملیات ناشناخته است.');
@@ -78,12 +108,42 @@ export class VendorBotService implements OnModuleInit {
 
     this.bot.on('message', async (msg) => {
       if (!msg.text || msg.text.startsWith('/')) return;
-      if (msg.text.startsWith('سفارش جدید')) {
-        const parts = msg.text.split('#');
-        const orderId = parts[1];
-        if (orderId) {
-          await this.bot?.sendMessage(msg.chat.id, 'وضعیت سفارش را انتخاب کنید:', { reply_markup: actionKeyboard(orderId) });
+      const vendor = await this.orders.getVendorByChatId(msg.chat.id);
+      if (!vendor) {
+        await this.bot?.sendMessage(msg.chat.id, 'اکانت شما فعال نیست. لطفاً با پشتیبانی تماس بگیرید.');
+        return;
+      }
+
+      switch (msg.text) {
+        case VENDOR_MENU_BUTTONS.NEW_ORDERS: {
+          const orders = await this.orders.listVendorOpenOrders(vendor.id);
+          if (!orders.length) {
+            await this.bot?.sendMessage(msg.chat.id, 'سفارش جدیدی وجود ندارد.');
+            break;
+          }
+          for (const order of orders) {
+            await this.bot?.sendMessage(
+              msg.chat.id,
+              `سفارش #${order.id.slice(-6)} از ${order.user.mobile}\nمبلغ: ${order.totalPrice.toString()}`,
+              { reply_markup: actionKeyboard(order.id) }
+            );
+          }
+          break;
         }
+        case VENDOR_MENU_BUTTONS.RECENT: {
+          const recent = await this.orders.listVendorRecentOrders(vendor.id);
+          if (!recent.length) {
+            await this.bot?.sendMessage(msg.chat.id, 'سفارشی یافت نشد.');
+            break;
+          }
+          const summary = recent
+            .map((o) => `#${o.id.slice(-6)} | ${o.user.mobile} | ${o.status} | ${new Date(o.createdAt).toLocaleString('fa-IR')}`)
+            .join('\n');
+          await this.bot?.sendMessage(msg.chat.id, summary);
+          break;
+        }
+        default:
+          await sendHome(msg.chat.id);
       }
     });
   }

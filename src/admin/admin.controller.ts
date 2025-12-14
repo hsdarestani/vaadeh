@@ -77,4 +77,14 @@ export class AdminController {
   kpis() {
     return this.admin.kpis();
   }
+
+  @Get('payments')
+  listPayments() {
+    return this.admin.listPayments();
+  }
+
+  @Get('notifications')
+  notificationLog() {
+    return this.admin.notificationLog();
+  }
 }

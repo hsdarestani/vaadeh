@@ -47,6 +47,12 @@ export class CustomerBotService implements OnModuleInit {
     this.bot.on('message', async (msg) => {
       if (!msg.text || msg.text.startsWith('/')) return;
 
+      const user = await this.orders.getTelegramUser(msg.chat.id);
+      if (!user) {
+        await this.bot?.sendMessage(msg.chat.id, 'اکانت شما فعال نیست. لطفاً با پشتیبانی تماس بگیرید.');
+        return;
+      }
+
       switch (msg.text) {
         case MENU_BUTTONS.NEW_ORDER:
           await this.bot?.sendMessage(

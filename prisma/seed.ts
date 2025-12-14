@@ -7,14 +7,14 @@ const prisma = new PrismaClient();
 async function main() {
   const admin = await prisma.user.upsert({
     where: { mobile: '+10000000000' },
-    update: { role: UserRole.ADMIN, lastLoginAt: new Date() },
-    create: { mobile: '+10000000000', role: UserRole.ADMIN, lastLoginAt: new Date() }
+    update: { role: UserRole.ADMIN, lastLoginAt: new Date(), isActive: true },
+    create: { mobile: '+10000000000', role: UserRole.ADMIN, lastLoginAt: new Date(), isActive: true }
   });
 
   const customer = await prisma.user.upsert({
     where: { mobile: '+19999999999' },
-    update: { lastLoginAt: new Date() },
-    create: { mobile: '+19999999999', role: UserRole.CUSTOMER, lastLoginAt: new Date() }
+    update: { lastLoginAt: new Date(), isActive: true },
+    create: { mobile: '+19999999999', role: UserRole.CUSTOMER, lastLoginAt: new Date(), isActive: true }
   });
 
   const address = await prisma.address.upsert({
@@ -39,7 +39,9 @@ async function main() {
       lat: 35.6895,
       lng: 51.389,
       serviceRadiusKm: 10,
-      isActive: true
+      contactPhone: '+18888888888',
+      isActive: true,
+      maxDailyOrders: 50
     }
   });
 
@@ -67,14 +69,23 @@ async function main() {
       deliveryType: DeliveryType.IN_RANGE,
       deliveryFee: new Prisma.Decimal(0),
       totalPrice: new Prisma.Decimal(570000),
-      status: OrderStatus.PAID,
+      status: OrderStatus.COMPLETED,
+      locationLat: address.lat,
+      locationLng: address.lng,
       items: {
         create: [
           { menuVariantId: regularVariant.id, qty: 1, unitPrice: regularVariant.price },
           { menuVariantId: largeVariant.id, qty: 1, unitPrice: largeVariant.price }
         ]
       },
-      history: { create: [{ status: OrderStatus.PAID }, { status: OrderStatus.SENT_TO_VENDOR }] }
+      history: {
+        create: [
+          { status: OrderStatus.PENDING, note: 'seed pending' },
+          { status: OrderStatus.ACCEPTED, note: 'seed accepted' },
+          { status: OrderStatus.DELIVERY_INTERNAL, note: 'seed delivering' },
+          { status: OrderStatus.COMPLETED, note: 'seed completed' }
+        ]
+      }
     }
   });
 

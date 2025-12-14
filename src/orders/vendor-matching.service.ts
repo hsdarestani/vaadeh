@@ -1,0 +1,76 @@
+import { BadRequestException, Injectable } from '@nestjs/common';
+import { DeliveryType, OrderStatus, Vendor } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
+
+interface MatchInput {
+  vendor: Vendor;
+  location: { lat: number; lng: number };
+}
+
+interface VendorMatchResult {
+  vendor: Vendor;
+  deliveryType: DeliveryType;
+  deliveryFee: number;
+  distanceKm: number;
+}
+
+@Injectable()
+export class VendorMatchingService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  private getDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const toRad = (value: number) => (value * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(toRad(lat1)) *
+        Math.cos(toRad(lat2)) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  private async assertCapacity(vendorId: string, maxDailyOrders?: number) {
+    if (!maxDailyOrders) return;
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+
+    const todayOrders = await this.prisma.order.count({
+      where: {
+        vendorId,
+        createdAt: { gte: start, lte: end },
+        status: { notIn: [OrderStatus.CANCELLED, OrderStatus.REJECTED] }
+      }
+    });
+
+    if (todayOrders >= maxDailyOrders) {
+      throw new BadRequestException('ظرفیت وندور تکمیل است');
+    }
+  }
+
+  async matchVendor(input: MatchInput): Promise<VendorMatchResult> {
+    if (!input.vendor.isActive) {
+      throw new BadRequestException('وندور غیرفعال است');
+    }
+
+    await this.assertCapacity(input.vendor.id, input.vendor.maxDailyOrders ?? undefined);
+
+    const distanceKm = this.getDistanceKm(input.location.lat, input.location.lng, input.vendor.lat, input.vendor.lng);
+    const snappMax = Number(process.env.SNAPP_COD_MAX_KM ?? 30);
+
+    if (distanceKm > snappMax) {
+      throw new BadRequestException('آدرس خارج از محدوده سرویس است');
+    }
+
+    const inRange = distanceKm <= input.vendor.serviceRadiusKm;
+    const deliveryType = inRange ? DeliveryType.IN_RANGE : DeliveryType.SNAPP_COD;
+    const deliveryFee = inRange ? Number(process.env.INTERNAL_DELIVERY_FEE ?? 0) : 0;
+
+    return { vendor: input.vendor, deliveryType, deliveryFee, distanceKm };
+  }
+}

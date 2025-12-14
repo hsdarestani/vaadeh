@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
   DeliveryType,
+  EventActorType,
   OrderStatus,
   PaymentStatus,
   Prisma
@@ -8,6 +9,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationOrchestrator } from '../notifications/notification.orchestrator';
 import { EventLogService } from '../event-log/event-log.service';
+import { ProductEventService } from '../event-log/product-event.service';
 import { CreateVendorDto } from './dto/create-vendor.dto';
 import { UpdateVendorDto } from './dto/update-vendor.dto';
 import { CreateMenuItemDto } from './dto/create-menu-item.dto';
@@ -21,7 +23,8 @@ export class AdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationOrchestrator,
-    private readonly eventLog: EventLogService
+    private readonly eventLog: EventLogService,
+    private readonly productEvents: ProductEventService
   ) {}
 
   listVendors() {
@@ -114,7 +117,7 @@ export class AdminService {
       if (dto.status === OrderStatus.ACCEPTED) {
         await this.notifications.onVendorAccepted(orderId);
       }
-      if ([OrderStatus.PREPARING, OrderStatus.DELIVERED].includes(dto.status)) {
+      if ([OrderStatus.DELIVERY_INTERNAL, OrderStatus.DELIVERY_SNAPP, OrderStatus.COMPLETED].includes(dto.status)) {
         await this.notifications.onDelivery(orderId, dto.status);
       }
     }
@@ -130,6 +133,15 @@ export class AdminService {
           totalPrice: dto.totalPrice ?? order.totalPrice,
           deliveryFee: dto.deliveryFee ?? order.deliveryFee,
           adminNote: dto.adminNote
+        }
+      });
+      await this.productEvents.track('admin_override', {
+        actorType: EventActorType.ADMIN,
+        orderId,
+        metadata: {
+          nextStatus: dto.status,
+          totalPrice: dto.totalPrice,
+          deliveryFee: dto.deliveryFee
         }
       });
     }
@@ -158,19 +170,62 @@ export class AdminService {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const [dailyOrders, totalOrders, cancelledOrders, verifiedPayments, vendorGroup, outOfRange, inRange] =
-      await Promise.all([
-        this.prisma.order.count({ where: { createdAt: { gte: today } } }),
-        this.prisma.order.count(),
-        this.prisma.order.count({ where: { status: { in: [OrderStatus.CANCELLED, OrderStatus.REJECTED] } } }),
-        this.prisma.payment.aggregate({ _sum: { amount: true }, where: { status: PaymentStatus.VERIFIED } }),
-        this.prisma.order.groupBy({ by: ['vendorId'], _count: { _all: true }, _sum: { totalPrice: true } }),
-        this.prisma.order.count({ where: { deliveryType: DeliveryType.OUT_OF_RANGE_SNAPP } }),
-        this.prisma.order.count({ where: { deliveryType: DeliveryType.IN_RANGE } })
-      ]);
+    const [
+      dailyOrders,
+      totalOrders,
+      cancelledOrders,
+      verifiedPayments,
+      vendorGroup,
+      outOfRange,
+      inRange,
+      paymentRequested,
+      paymentPaid,
+      histories
+    ] = await Promise.all([
+      this.prisma.order.count({ where: { createdAt: { gte: today } } }),
+      this.prisma.order.count(),
+      this.prisma.order.count({ where: { status: { in: [OrderStatus.CANCELLED, OrderStatus.REJECTED] } } }),
+      this.prisma.payment.aggregate({ _sum: { amount: true }, where: { status: PaymentStatus.VERIFIED } }),
+      this.prisma.order.groupBy({ by: ['vendorId'], _count: { _all: true }, _sum: { totalPrice: true } }),
+      this.prisma.order.count({ where: { deliveryType: DeliveryType.SNAPP_COD } }),
+      this.prisma.order.count({ where: { deliveryType: DeliveryType.IN_RANGE } }),
+      this.prisma.payment.count({ where: { status: PaymentStatus.PENDING } }),
+      this.prisma.payment.count({ where: { status: PaymentStatus.VERIFIED } }),
+      this.prisma.orderStatusHistory.findMany({
+        where: { status: { in: [OrderStatus.PENDING, OrderStatus.ACCEPTED, OrderStatus.COMPLETED] } },
+        orderBy: { changedAt: 'asc' }
+      })
+    ]);
 
     const vendorNames = await this.prisma.vendor.findMany({ select: { id: true, name: true } });
     const vendorLookup = new Map(vendorNames.map((v) => [v.id, v.name]));
+
+    const timingByOrder = histories.reduce(
+      (acc, item) => {
+        const current = acc.get(item.orderId) ?? {};
+        acc.set(item.orderId, { ...current, [item.status]: item.changedAt });
+        return acc;
+      },
+      new Map<string, Partial<Record<OrderStatus, Date>>>()
+    );
+
+    let acceptanceTotal = 0;
+    let acceptanceCount = 0;
+    let completionTotal = 0;
+    let completionCount = 0;
+
+    timingByOrder.forEach((timings) => {
+      if (timings[OrderStatus.PENDING] && timings[OrderStatus.ACCEPTED]) {
+        acceptanceTotal +=
+          (timings[OrderStatus.ACCEPTED].getTime() - timings[OrderStatus.PENDING].getTime()) / 1000;
+        acceptanceCount += 1;
+      }
+      if (timings[OrderStatus.PENDING] && timings[OrderStatus.COMPLETED]) {
+        completionTotal +=
+          (timings[OrderStatus.COMPLETED].getTime() - timings[OrderStatus.PENDING].getTime()) / 1000;
+        completionCount += 1;
+      }
+    });
 
     return {
       dailyOrders,
@@ -185,8 +240,19 @@ export class AdminService {
       deliveryMix: {
         inRange,
         outOfRange
-      }
+      },
+      paymentConversion: paymentRequested ? paymentPaid / paymentRequested : 0,
+      averageSecondsToAccept: acceptanceCount ? acceptanceTotal / acceptanceCount : 0,
+      averageSecondsToComplete: completionCount ? completionTotal / completionCount : 0
     };
+  }
+
+  listPayments() {
+    return this.prisma.payment.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
+  }
+
+  notificationLog() {
+    return this.prisma.notificationLog.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
   }
 
   private async ensureVendorExists(vendorId: string) {

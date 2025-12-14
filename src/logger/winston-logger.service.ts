@@ -1,14 +1,28 @@
 import { LoggerService, LogLevel } from '@nestjs/common';
 import { createLogger, format, Logger, transports } from 'winston';
+import DailyRotateFile from 'winston-daily-rotate-file';
 
 export class WinstonLogger implements LoggerService {
   private readonly logger: Logger;
 
   constructor(level: LogLevel = 'debug') {
+    const logFormat = format.combine(format.timestamp(), format.errors({ stack: true }), format.json());
+
     this.logger = createLogger({
       level,
-      format: format.combine(format.timestamp(), format.errors({ stack: true }), format.json()),
-      transports: [new transports.Console()]
+      format: logFormat,
+      transports: [
+        new transports.Console(),
+        new DailyRotateFile({
+          dirname: 'logs',
+          filename: 'app-%DATE%.log',
+          datePattern: 'YYYY-MM-DD',
+          zippedArchive: true,
+          maxSize: '20m',
+          maxFiles: '14d',
+          format: logFormat
+        })
+      ]
     });
   }
 

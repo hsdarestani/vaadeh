@@ -17,6 +17,7 @@ model User {
   mobile         String    @unique
   telegramUserId String?   @unique
   isBlocked      Boolean   @default(false)
+  isActive       Boolean   @default(false)
   role           UserRole  @default(CUSTOMER)
 
   addresses      Address[]
@@ -47,7 +48,9 @@ model Vendor {
   lng             Float
   serviceRadiusKm Float
   telegramChatId  String?
+  contactPhone    String?
   isActive        Boolean    @default(true)
+  maxDailyOrders  Int?
 
   menuItems MenuItem[]
   orders    Order[]
@@ -72,6 +75,7 @@ model MenuVariant {
   updatedAt  DateTime @updatedAt
   code       String
   price      Decimal  @db.Decimal(10, 2)
+  isAvailable Boolean  @default(true)
 
   menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
   menuItemId String
@@ -90,7 +94,11 @@ model Order {
   deliveryFee     Decimal             @db.Decimal(10, 2) @default(0)
   totalPrice      Decimal             @db.Decimal(10, 2)
   adminNote       String?
-  status          OrderStatus         @default(DRAFT)
+  customerNote    String?
+  scheduledAt     DateTime?
+  locationLat     Float
+  locationLng     Float
+  status          OrderStatus         @default(PENDING)
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   vendor  Vendor  @relation(fields: [vendorId], references: [id], onDelete: Cascade)
@@ -119,6 +127,7 @@ model OrderStatusHistory {
   orderId   String
   status    OrderStatus
   changedAt DateTime    @default(now())
+  note      String?
 }
 
 model Payment {
@@ -135,6 +144,22 @@ model Payment {
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
   user  User? @relation(fields: [userId], references: [id])
   userId String?
+
+  attempts PaymentAttempt[]
+}
+
+model PaymentAttempt {
+  id        String         @id @default(cuid())
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  payment   Payment        @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  paymentId String
+  requestId String?
+  trackId   String
+  amount    Decimal        @db.Decimal(10, 2)
+  status    PaymentStatus
+  rawResponse Json
+  type      PaymentAttemptType
 }
 
 enum OrderStatus {
@@ -143,15 +168,16 @@ enum OrderStatus {
   PAID
   SENT_TO_VENDOR
   ACCEPTED
-  PREPARING
-  DELIVERED
+  DELIVERY_INTERNAL
+  DELIVERY_SNAPP
+  COMPLETED
   REJECTED
   CANCELLED
 }
 
 enum DeliveryType {
   IN_RANGE
-  OUT_OF_RANGE_SNAPP
+  SNAPP_COD
 }
 
 enum PaymentStatus {
@@ -165,9 +191,32 @@ enum PaymentProvider {
   ZIBAL
 }
 
+enum PaymentAttemptType {
+  REQUEST
+  CALLBACK
+  VERIFY
+}
+
 enum NotificationChannel {
   TELEGRAM
   SMS
+}
+
+enum EventActorType {
+  USER
+  VENDOR
+  ADMIN
+  SYSTEM
+}
+
+model ProductEvent {
+  id        String         @id @default(cuid())
+  createdAt DateTime       @default(now())
+  eventName String
+  actorType EventActorType
+  actorId   String?
+  orderId   String?
+  metadata  Json
 }
 
 enum UserRole {

@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-slate-50 text-slate-900;
+}
+
+.card {
+  @apply bg-white rounded-xl shadow border border-slate-200 p-6;
+}
+
+.button {
+  @apply px-4 py-2 rounded-md bg-slate-900 text-white font-semibold hover:bg-slate-800 disabled:opacity-50;
+}

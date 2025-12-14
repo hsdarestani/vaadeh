@@ -20,6 +20,11 @@ export class AuthService {
   ) {}
 
   async requestOtp(mobile: string) {
+    const user = await this.prisma.user.findUnique({ where: { mobile } });
+    if (!user || user.isBlocked || !user.isActive) {
+      throw new UnauthorizedException('اکانت شما فعال نیست');
+    }
+
     const code = this.otp.generateCode(mobile);
     await this.notifications.sendSms(mobile, `کد ورود شما: ${code}`);
     return { mobile, codeSent: true, code }; // expose for MVP/testing
@@ -38,14 +43,15 @@ export class AuthService {
       throw new UnauthorizedException('Invalid OTP');
     }
 
-    const user = await this.prisma.user.upsert({
-      where: { mobile },
-      update: { lastLoginAt: new Date() },
-      create: { mobile, lastLoginAt: new Date(), role: UserRole.CUSTOMER }
-    });
+    const user = await this.prisma.user.findUnique({ where: { mobile } });
+    if (!user || user.isBlocked || !user.isActive) {
+      throw new UnauthorizedException('اکانت شما فعال نیست');
+    }
 
-    const tokens = this.signTokens(user.id, user.mobile, user.role);
-    return { user, ...tokens };
+    await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+
+    const tokens = this.signTokens(user.id, user.mobile, user.role ?? UserRole.CUSTOMER);
+    return { user: { ...user, lastLoginAt: new Date() }, ...tokens };
   }
 
   async refreshTokens(refreshToken: string) {

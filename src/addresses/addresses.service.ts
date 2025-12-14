@@ -42,7 +42,7 @@ export class AddressesService {
 
   async listByTelegramUser(telegramUserId: number) {
     const user = await this.prisma.user.findUnique({ where: { telegramUserId: telegramUserId.toString() } });
-    if (!user) return [];
+    if (!user || user.isBlocked || !user.isActive) return [];
 
     return this.list(user.id);
   }
