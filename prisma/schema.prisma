@@ -1,0 +1,119 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrderStatus {
+  PENDING
+  ACCEPTED
+  IN_DELIVERY
+  COMPLETED
+  REJECTED
+}
+
+enum DeliveryType {
+  INTERNAL
+  SNAPP
+}
+
+model User {
+  id              Int        @id @default(autoincrement())
+  phone           String     @unique
+  telegramChatId  String?    @unique
+  addresses       Address[]
+  orders          Order[]
+  eventLogs       EventLog[]
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+}
+
+model Address {
+  id         Int      @id @default(autoincrement())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     Int
+  lat        Float
+  lng        Float
+  text       String
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model Vendor {
+  id            Int         @id @default(autoincrement())
+  name          String
+  location      String
+  active        Boolean     @default(true)
+  serviceRadius Float
+  menuItems     MenuItem[]
+  orders        Order[]
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+model MenuItem {
+  id         Int         @id @default(autoincrement())
+  vendor     Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId   Int
+  name       String
+  price      Decimal     @db.Decimal(10, 2)
+  available  Boolean     @default(true)
+  orderItems OrderItem[]
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@index([vendorId])
+}
+
+model Order {
+  id           Int           @id @default(autoincrement())
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       Int
+  vendor       Vendor        @relation(fields: [vendorId], references: [id])
+  vendorId     Int
+  status       OrderStatus   @default(PENDING)
+  deliveryType DeliveryType
+  totalPrice   Decimal       @db.Decimal(10, 2)
+  items        OrderItem[]
+  eventLogs    EventLog[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([vendorId])
+}
+
+model OrderItem {
+  id         Int      @id @default(autoincrement())
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId    Int
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+  menuItemId Int
+  quantity   Int      @default(1)
+  price      Decimal  @db.Decimal(10, 2)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([menuItemId])
+}
+
+model EventLog {
+  id         Int       @id @default(autoincrement())
+  eventName  String
+  user       User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId     Int?
+  order      Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  orderId    Int?
+  metadata   Json
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([orderId])
+}

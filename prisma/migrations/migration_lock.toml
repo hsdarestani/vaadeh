@@ -1,0 +1,3 @@
+# This file was created by Prisma to track applied migrations.
+# Read more about it in the docs: https://pris.ly/d/migrate
+provider = "postgresql"

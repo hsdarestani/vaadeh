@@ -1,0 +1,20 @@
+{
+  "name": "vaadeh",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "prisma": "prisma",
+    "db:migrate": "prisma migrate dev",
+    "db:seed": "prisma db seed",
+    "generate": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.16.1"
+  },
+  "devDependencies": {
+    "prisma": "^5.16.1"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  }
+}
