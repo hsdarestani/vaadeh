@@ -12,24 +12,24 @@ export class WinstonLogger implements LoggerService {
     });
   }
 
-  log(message: unknown, context?: string): void {
-    this.logger.info(message as string, { context });
+  log(message: unknown, context?: string, meta?: Record<string, unknown>): void {
+    this.logger.info(message as string, { context, ...meta });
   }
 
-  error(message: unknown, trace?: string, context?: string): void {
-    this.logger.error(message as string, { trace, context });
+  error(message: unknown, trace?: string, context?: string, meta?: Record<string, unknown>): void {
+    this.logger.error(message as string, { trace, context, ...meta });
   }
 
-  warn(message: unknown, context?: string): void {
-    this.logger.warn(message as string, { context });
+  warn(message: unknown, context?: string, meta?: Record<string, unknown>): void {
+    this.logger.warn(message as string, { context, ...meta });
   }
 
-  debug(message: unknown, context?: string): void {
-    this.logger.debug(message as string, { context });
+  debug(message: unknown, context?: string, meta?: Record<string, unknown>): void {
+    this.logger.debug(message as string, { context, ...meta });
   }
 
-  verbose(message: unknown, context?: string): void {
-    this.logger.verbose(message as string, { context });
+  verbose(message: unknown, context?: string, meta?: Record<string, unknown>): void {
+    this.logger.verbose(message as string, { context, ...meta });
   }
 
   setLogLevels(levels: LogLevel[]): void {

@@ -5,6 +5,8 @@ services:
     build: .
     env_file:
       - .env.example
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vaadeh?schema=public
     ports:
       - '3000:3000'
     depends_on:

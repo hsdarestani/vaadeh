@@ -3,6 +3,13 @@ import TelegramBot from 'node-telegram-bot-api';
 import { OrderStatus } from '@prisma/client';
 import { OrdersService } from '../orders/orders.service';
 
+const vendorActions = {
+  ACCEPT: 'accept',
+  REJECT: 'reject',
+  READY: 'ready',
+  DELIVERED: 'delivered'
+};
+
 @Injectable()
 export class VendorBotService implements OnModuleInit {
   private bot?: TelegramBot;
@@ -25,48 +32,59 @@ export class VendorBotService implements OnModuleInit {
   private registerHandlers() {
     if (!this.bot) return;
 
-    this.bot.onText(/\/start/, (msg) => {
-      this.bot?.sendMessage(msg.chat.id, 'Vendor bot ready. Use buttons to manage orders.', {
-        reply_markup: {
-          keyboard: [
-            [{ text: 'Accept Order' }, { text: 'Reject Order' }],
-            [{ text: 'Mark Ready' }, { text: 'Mark Delivered' }]
-          ],
-          resize_keyboard: true
+    const actionKeyboard = (orderId: string) => ({
+      inline_keyboard: [
+        [
+          { text: '✅ قبول', callback_data: `order:${orderId}:${vendorActions.ACCEPT}` },
+          { text: '❌ رد', callback_data: `order:${orderId}:${vendorActions.REJECT}` }
+        ],
+        [
+          { text: '🍳 آماده شد', callback_data: `order:${orderId}:${vendorActions.READY}` },
+          { text: '🛵 تحویل شد', callback_data: `order:${orderId}:${vendorActions.DELIVERED}` }
+        ]
+      ]
+    });
+
+    this.bot.on('callback_query', async (query) => {
+      if (!query.data || !query.message) return;
+      const [, orderId, action] = query.data.split(':');
+
+      try {
+        switch (action) {
+          case vendorActions.ACCEPT:
+            await this.orders.transition(orderId, OrderStatus.ACCEPTED);
+            break;
+          case vendorActions.REJECT:
+            await this.orders.transition(orderId, OrderStatus.REJECTED);
+            break;
+          case vendorActions.READY:
+            await this.orders.transition(orderId, OrderStatus.PREPARING);
+            break;
+          case vendorActions.DELIVERED:
+            await this.orders.transition(orderId, OrderStatus.DELIVERED);
+            break;
+          default:
+            await this.bot?.sendMessage(query.message.chat.id, 'عملیات ناشناخته است.');
+            return;
         }
-      });
+
+        await this.bot?.answerCallbackQuery({ callback_query_id: query.id, text: 'به‌روزرسانی شد' });
+        await this.bot?.sendMessage(query.message.chat.id, `وضعیت سفارش ${orderId.slice(-6)} بروزرسانی شد.`);
+      } catch (err) {
+        this.logger.error(err);
+        await this.bot?.answerCallbackQuery({ callback_query_id: query.id, text: 'خطا در تغییر وضعیت' });
+      }
     });
 
     this.bot.on('message', async (msg) => {
       if (!msg.text || msg.text.startsWith('/')) return;
-      const [action, orderId] = msg.text.split(' ').length > 1 ? msg.text.split(' ') : [msg.text];
-      if (!orderId) {
-        await this.bot?.sendMessage(msg.chat.id, 'Send action followed by orderId');
-        return;
+      if (msg.text.startsWith('سفارش جدید')) {
+        const parts = msg.text.split('#');
+        const orderId = parts[1];
+        if (orderId) {
+          await this.bot?.sendMessage(msg.chat.id, 'وضعیت سفارش را انتخاب کنید:', { reply_markup: actionKeyboard(orderId) });
+        }
       }
-
-      switch (action) {
-        case 'Accept':
-        case 'Accept Order':
-          await this.orders.transition(orderId, OrderStatus.ACCEPTED);
-          break;
-        case 'Reject':
-        case 'Reject Order':
-          await this.orders.transition(orderId, OrderStatus.REJECTED);
-          break;
-        case 'Mark':
-        case 'Mark Ready':
-          await this.orders.transition(orderId, OrderStatus.DELIVERY);
-          break;
-        case 'Mark Delivered':
-          await this.orders.transition(orderId, OrderStatus.COMPLETED);
-          break;
-        default:
-          await this.bot?.sendMessage(msg.chat.id, 'Unknown action');
-          return;
-      }
-
-      await this.bot?.sendMessage(msg.chat.id, `Order ${orderId} updated to ${action}`);
     });
   }
 }
