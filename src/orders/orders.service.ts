@@ -13,6 +13,11 @@ interface CartItem {
   qty: number;
 }
 
+interface CartItem {
+  menuVariantId: string;
+  qty: number;
+}
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -197,6 +202,16 @@ export class OrdersService {
         vendorId: order.vendorId,
         userId: order.userId
       });
+    }
+    if ([OrderStatus.PREPARING, OrderStatus.DELIVERED].includes(next)) {
+      await this.notifications.onDelivery(orderId, next);
+      if (next === OrderStatus.DELIVERED) {
+        await this.eventLog.logEvent('delivery_completed', {
+          orderId,
+          vendorId: order.vendorId,
+          userId: order.userId
+        });
+      }
     }
 
     return updated;
