@@ -5,14 +5,39 @@ services:
     build: .
     env_file:
       - .env.example
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vaadeh?schema=public
+      REDIS_URL: redis://redis:6379
     ports:
       - '3000:3000'
     depends_on:
       - postgres
+      - redis
     command: sh -c "npm run start:dev"
     volumes:
       - .:/app
       - /app/node_modules
+
+  admin-ui:
+    build: ./admin-ui
+    env_file:
+      - .env.example
+    environment:
+      NEXT_PUBLIC_API_BASE: http://nginx/api
+    ports:
+      - '3001:3000'
+    depends_on:
+      - app
+
+  nginx:
+    image: nginx:1.25-alpine
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - '80:80'
+    depends_on:
+      - app
+      - admin-ui
 
   postgres:
     image: postgres:16-alpine
@@ -24,6 +49,11 @@ services:
       - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
 
 volumes:
   postgres_data: {}

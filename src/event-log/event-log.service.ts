@@ -5,6 +5,8 @@ import { PrismaService } from '../prisma/prisma.service';
 export type EventPayload = {
   orderId?: string;
   userId?: string;
+  vendorId?: string;
+  correlationId?: string;
   metadata?: Record<string, unknown>;
 };
 
@@ -18,9 +20,11 @@ export class EventLogService {
     await this.prisma.eventLog.create({
       data: {
         eventName,
+        correlationId: payload.correlationId,
         metadata: (payload.metadata ?? {}) as Prisma.JsonObject,
         orderId: payload.orderId,
-        userId: payload.userId
+        userId: payload.userId,
+        vendorId: payload.vendorId
       }
     });
 

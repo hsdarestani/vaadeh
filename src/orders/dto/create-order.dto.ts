@@ -1,31 +1,78 @@
 import { Type } from 'class-transformer';
-import { IsEnum, IsNumber, IsPositive, IsString, ValidateNested } from 'class-validator';
+import {
+  IsDateString,
+  IsEnum,
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsUUID,
+  ValidateNested
+} from 'class-validator';
 import { DeliveryType } from '@prisma/client';
 
-class CreateOrderItemDto {
+class CartItemDto {
   @IsString()
-  menuItemId!: string;
+  menuVariantId!: string;
 
   @Type(() => Number)
-  @IsPositive()
-  quantity!: number;
+  @IsNumber()
+  qty!: number;
+}
+
+class AddressPayloadDto {
+  @IsString()
+  title!: string;
+
+  @Type(() => Number)
+  @IsNumber()
+  lat!: number;
+
+  @Type(() => Number)
+  @IsNumber()
+  lng!: number;
+
+  @IsString()
+  fullAddress!: string;
+}
+
+class LocationDto {
+  @Type(() => Number)
+  @IsNumber()
+  lat!: number;
+
+  @Type(() => Number)
+  @IsNumber()
+  lng!: number;
 }
 
 export class CreateOrderDto {
-  @IsString()
-  userId!: string;
+  @IsOptional()
+  @IsUUID()
+  addressId?: string;
 
-  @IsString()
-  vendorId!: string;
-
-  @IsEnum(DeliveryType)
-  deliveryType!: DeliveryType;
-
-  @IsNumber()
-  @IsPositive()
-  totalPrice!: number;
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => AddressPayloadDto)
+  addressPayload?: AddressPayloadDto;
 
   @ValidateNested({ each: true })
-  @Type(() => CreateOrderItemDto)
-  items!: CreateOrderItemDto[];
+  @Type(() => CartItemDto)
+  items!: CartItemDto[];
+
+  @IsOptional()
+  @IsEnum(DeliveryType)
+  deliveryType?: DeliveryType;
+
+  @IsOptional()
+  @IsString()
+  customerNote?: string;
+
+  @IsOptional()
+  @IsDateString()
+  scheduledAt?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => LocationDto)
+  location?: LocationDto;
 }

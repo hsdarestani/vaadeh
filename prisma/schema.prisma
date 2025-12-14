@@ -1,3 +1,6 @@
+// Prisma schema aligned to core platform MVP
+// Generated models capture authentication, menu, ordering, and payments.
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,113 +13,245 @@ datasource db {
 model User {
   id             String    @id @default(cuid())
   createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  phone          String    @unique
-  telegramChatId String?   @unique
-  role           UserRole  @default(customer)
+  lastLoginAt    DateTime?
+  mobile         String    @unique
+  telegramUserId String?   @unique
+  isBlocked      Boolean   @default(false)
+  isActive       Boolean   @default(false)
+  role           UserRole  @default(CUSTOMER)
+
   addresses      Address[]
   orders         Order[]
-  eventLogs      EventLog[]
+  payments       Payment[]
 }
 
 model Address {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  lat       Float
-  lng       Float
-  text      String
-  isDefault Boolean  @default(false)
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  title       String
+  lat         Float
+  lng         Float
+  fullAddress String
+  isDefault   Boolean  @default(false)
 
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId String
 }
 
 model Vendor {
-  id            String     @id @default(cuid())
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-  name          String
-  location      String
-  active        Boolean    @default(true)
-  serviceRadius Float      @default(5)
-  menuItems     MenuItem[]
-  orders        Order[]
+  id              String     @id @default(cuid())
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  name            String
+  lat             Float
+  lng             Float
+  serviceRadiusKm Float
+  telegramChatId  String?
+  contactPhone    String?
+  isActive        Boolean    @default(true)
+  maxDailyOrders  Int?
+
+  menuItems MenuItem[]
+  orders    Order[]
 }
 
 model MenuItem {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id        String      @id @default(cuid())
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
   name      String
-  price     Decimal  @db.Decimal(10, 2)
-  available Boolean  @default(true)
+  isActive  Boolean     @default(true)
 
-  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendor   Vendor       @relation(fields: [vendorId], references: [id], onDelete: Cascade)
   vendorId String
+
+  variants MenuVariant[]
+}
+
+model MenuVariant {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  code       String
+  price      Decimal  @db.Decimal(10, 2)
+  isAvailable Boolean  @default(true)
+
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  menuItemId String
 
   orderItems OrderItem[]
 }
 
 model Order {
-  id           String        @id @default(cuid())
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  status       OrderStatus   @default(PENDING)
-  deliveryType DeliveryType
-  totalPrice   Decimal       @db.Decimal(10, 2)
+  id              String              @id @default(cuid())
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  userId          String
+  vendorId        String
+  addressSnapshot Json
+  deliveryType    DeliveryType
+  deliveryFee     Decimal             @db.Decimal(10, 2) @default(0)
+  totalPrice      Decimal             @db.Decimal(10, 2)
+  adminNote       String?
+  customerNote    String?
+  scheduledAt     DateTime?
+  locationLat     Float
+  locationLng     Float
+  status          OrderStatus         @default(PENDING)
 
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId String
-
-  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
-  vendorId String
-
-  items     OrderItem[]
-  eventLogs EventLog[]
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vendor  Vendor  @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  items   OrderItem[]
+  history OrderStatusHistory[]
+  payment Payment?
 }
 
 model OrderItem {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  quantity  Int
-  price     Decimal  @db.Decimal(10, 2)
+  id            String      @id @default(cuid())
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  qty           Int
+  unitPrice     Decimal     @db.Decimal(10, 2)
 
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  orderId String
+  order         Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId       String
 
-  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
-  menuItemId String
+  menuVariant   MenuVariant @relation(fields: [menuVariantId], references: [id], onDelete: Cascade)
+  menuVariantId String
 }
 
-model EventLog {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  eventName String
-  metadata  Json
+model OrderStatusHistory {
+  id        String      @id @default(cuid())
+  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId   String
+  status    OrderStatus
+  changedAt DateTime    @default(now())
+  note      String?
+}
 
-  user   User?  @relation(fields: [userId], references: [id])
+model Payment {
+  id         String        @id @default(cuid())
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  orderId    String        @unique
+  provider   PaymentProvider
+  trackId    String
+  amount     Decimal       @db.Decimal(10, 2)
+  status     PaymentStatus @default(INITIATED)
+  verifiedAt DateTime?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user  User? @relation(fields: [userId], references: [id])
   userId String?
 
-  order   Order? @relation(fields: [orderId], references: [id])
-  orderId String?
+  attempts PaymentAttempt[]
+}
+
+model PaymentAttempt {
+  id        String         @id @default(cuid())
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  payment   Payment        @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  paymentId String
+  requestId String?
+  trackId   String
+  amount    Decimal        @db.Decimal(10, 2)
+  status    PaymentStatus
+  rawResponse Json
+  type      PaymentAttemptType
 }
 
 enum OrderStatus {
   PENDING
   ACCEPTED
-  DELIVERY
+  DELIVERY_INTERNAL
+  DELIVERY_SNAPP
   COMPLETED
   REJECTED
+  CANCELLED
 }
 
 enum DeliveryType {
-  INTERNAL
-  SNAPP
+  IN_RANGE
+  SNAPP_COD
+}
+
+enum PaymentStatus {
+  INITIATED
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+enum PaymentProvider {
+  ZIBAL
+}
+
+enum PaymentAttemptType {
+  REQUEST
+  CALLBACK
+  VERIFY
+}
+
+enum NotificationChannel {
+  TELEGRAM
+  SMS
+}
+
+enum EventActorType {
+  USER
+  VENDOR
+  ADMIN
+  SYSTEM
+}
+
+model ProductEvent {
+  id        String         @id @default(cuid())
+  createdAt DateTime       @default(now())
+  eventName String
+  actorType EventActorType
+  actorId   String?
+  orderId   String?
+  metadata  Json
 }
 
 enum UserRole {
-  customer
-  admin
+  ADMIN
+  CUSTOMER
+}
+
+model EventLog {
+  id            String   @id @default(cuid())
+  createdAt     DateTime @default(now())
+  eventName     String
+  correlationId String?
+  metadata      Json
+
+  order   Order?  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId String?
+
+  user   User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String?
+
+  vendor   Vendor? @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId String?
+}
+
+model NotificationLog {
+  id        String               @id @default(cuid())
+  createdAt DateTime             @default(now())
+  channel   NotificationChannel
+  recipient String
+  message   String
+  eventName String?
+
+  order   Order? @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId String?
+
+  user   User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String?
+
+  vendor   Vendor? @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId String?
 }
