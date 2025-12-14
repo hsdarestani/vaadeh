@@ -2,6 +2,18 @@
 
 Vaadeh is a **server-based, production-ready MVP** for a modern food ordering platform, designed to operate via **Telegram bots + web landing pages**, with a **full admin dashboard**, **event-driven logging**, and **clean UX**.
 
+## ⚡ Quickstart (Phase 0 baseline)
+
+1. Install dependencies: `npm install`
+2. Copy environment template: `cp .env.example .env` and fill in secrets.
+3. Start the dev server: `npm run start:dev` (NestJS + TypeScript strict mode).
+4. Optional: run with Docker + PostgreSQL: `docker compose up --build`.
+
+Key tooling already wired:
+- NestJS with strict TypeScript
+- ESLint + Prettier
+- Prisma (PostgreSQL), BullMQ-ready, Telegram bot SDK, Winston logger
+
 This project is intentionally built to be:
 - Lean (MVP-first)
 - Config-driven (no hardcoded vendors or prices)
