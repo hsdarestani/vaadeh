@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import TelegramBot from 'node-telegram-bot-api';
 import { Prisma, DeliveryType } from '@prisma/client';
 import { OrdersService } from '../orders/orders.service';
@@ -131,9 +131,13 @@ export class CustomerBotService implements OnModuleInit {
     const vendors = await this.prisma.vendor.findMany({ where: { isActive: true }, orderBy: { name: 'asc' }, take: 10 });
     session.stage = 'select_vendor';
     const keyboard = vendors.map((v) => [{ text: v.name, callback_data: `vendor:${v.id}` }]);
-    await this.bot?.sendMessage(chatId, 'رستوران/وندر مورد نظر را انتخاب کنید:', {
-      reply_markup: { inline_keyboard: keyboard }
-    });
+    await this.bot?.sendMessage(
+      chatId,
+      'رستوران/وندر مورد نظر را انتخاب کنید (سبد تنها برای یک وندور است):',
+      {
+        reply_markup: { inline_keyboard: keyboard }
+      }
+    );
   }
 
   private buildMenuKeyboard(variants: { id: string; label: string }[], page: number, hasNext: boolean) {
@@ -468,19 +472,42 @@ export class CustomerBotService implements OnModuleInit {
     if (session.stage === 'awaiting_mobile') {
       const mobile = text.trim();
       session.mobile = mobile;
-      await this.auth.requestOtp(mobile);
+      try {
+        await this.auth.requestOtp(mobile);
+      } catch (err) {
+        if (err instanceof UnauthorizedException) {
+          session.stage = 'idle';
+          session.mobile = undefined;
+          await this.bot?.sendMessage(
+            chatId,
+            'کاربری با این شماره یافت نشد یا فعال نیست. لطفاً با پشتیبانی تماس بگیرید تا حساب شما اضافه شود.'
+          );
+          return;
+        }
+        throw err;
+      }
       session.stage = 'awaiting_otp';
       await this.bot?.sendMessage(chatId, 'کد ارسال‌شده را وارد کنید.');
       return;
     }
 
     if (session.stage === 'awaiting_otp' && session.mobile) {
-      const verified = await this.auth.verifyOtp(session.mobile, text.trim());
-      const user = verified.user;
-      await this.prisma.user.update({ where: { id: user.id }, data: { telegramUserId: chatId.toString() } });
-      session.stage = 'idle';
-      await this.bot?.sendMessage(chatId, 'اکانت تلگرام شما متصل شد.');
-      await this.renderMainMenu(chatId);
+      try {
+        const verified = await this.auth.verifyOtp(session.mobile, text.trim());
+        const user = verified.user;
+        await this.prisma.user.update({ where: { id: user.id }, data: { telegramUserId: chatId.toString() } });
+        session.stage = 'idle';
+        await this.bot?.sendMessage(chatId, 'اکانت تلگرام شما متصل شد.');
+        await this.renderMainMenu(chatId);
+      } catch (err) {
+        if (err instanceof UnauthorizedException) {
+          session.stage = 'idle';
+          session.mobile = undefined;
+          await this.bot?.sendMessage(chatId, 'کد یا حساب معتبر نیست. لطفاً با پشتیبانی تماس بگیرید.');
+          return;
+        }
+        throw err;
+      }
       return;
     }
 

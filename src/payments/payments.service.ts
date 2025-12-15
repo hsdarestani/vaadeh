@@ -48,6 +48,29 @@ export class PaymentsService {
     return this.merchantId;
   }
 
+  private async markPaymentFailed(
+    tx: Prisma.TransactionClient,
+    paymentId: string,
+    orderId: string,
+    message: string,
+    amount: Prisma.Decimal,
+    rawResponse?: Record<string, any>
+  ) {
+    await tx.payment.update({ where: { id: paymentId }, data: { status: PaymentStatus.FAILED } });
+    await tx.order.update({ where: { id: orderId }, data: { paymentStatus: PaymentStatus.FAILED } });
+    await tx.paymentAttempt.create({
+      data: {
+        paymentId,
+        requestId: rawResponse?.refNumber ?? rawResponse?.message ?? 'request_failed',
+        trackId: rawResponse?.trackId ?? 'unknown',
+        amount,
+        status: PaymentStatus.FAILED,
+        rawResponse: rawResponse ?? { message },
+        type: PaymentAttemptType.REQUEST
+      }
+    });
+  }
+
   async requestZibal(orderId: string, userId: string) {
     const order = await this.prisma.order.findUnique({ where: { id: orderId }, include: { payment: true } });
     if (!order || order.userId !== userId) {
@@ -82,8 +105,29 @@ export class PaymentsService {
         throw new BadRequestException(data.message || 'Payment gateway rejected request');
       }
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('Failed to reach Zibal sandbox', err);
+      const message = err instanceof BadRequestException ? err.message : 'در حال حاضر امکان اتصال به درگاه نیست';
+      const persisted = await this.prisma.$transaction(async (tx) => {
+        const paymentRecord = await tx.payment.upsert({
+          where: { orderId },
+          create: {
+            orderId,
+            userId,
+            provider: PaymentProvider.ZIBAL,
+            trackId,
+            amount,
+            status: PaymentStatus.FAILED
+          },
+          update: { status: PaymentStatus.FAILED, amount, trackId }
+        });
+        await this.markPaymentFailed(tx, paymentRecord.id, orderId, message, amount, {
+          message: err instanceof Error ? err.message : message,
+          trackId
+        });
+        return paymentRecord;
+      });
+
+      await this.notifications.onPaymentFailed(orderId);
+      throw new BadRequestException(message);
     }
 
     const payment = await this.prisma.$transaction(async (tx) => {
@@ -116,6 +160,8 @@ export class PaymentsService {
         }
       });
 
+      await tx.order.update({ where: { id: orderId }, data: { paymentStatus: PaymentStatus.PENDING } });
+
       return persisted;
     });
 
@@ -139,6 +185,10 @@ export class PaymentsService {
       return { payment, orderStatus: payment.order?.status, message: 'already verified' };
     }
 
+    if (payment.status === PaymentStatus.FAILED) {
+      return { payment, orderStatus: payment.order?.status, message: 'payment failed' };
+    }
+
     let verifyData: ZibalVerifyResponse | null = null;
     try {
       const { data } = await axios.post<ZibalVerifyResponse>('https://gateway.zibal.ir/v1/verify', {
@@ -148,10 +198,13 @@ export class PaymentsService {
       verifyData = data;
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn('Zibal verify fallback used', err);
+      console.warn('Zibal verify failed', err);
     }
 
-    const success = verifyData?.result === 100;
+    const providerOk = verifyData?.result === 100;
+    const amountMatches = verifyData?.amount === undefined || Number(verifyData.amount) === Number(payment.amount);
+    const orderMatches = rawPayload?.orderId ? rawPayload.orderId === payment.orderId : true;
+    const success = providerOk && amountMatches && orderMatches;
     const verifiedAt = success ? new Date() : undefined;
 
     await this.prisma.$transaction(async (tx) => {
@@ -175,11 +228,15 @@ export class PaymentsService {
         }
       });
 
+      await tx.order.update({
+        where: { id: payment.orderId },
+        data: { paymentStatus: success ? PaymentStatus.PAID : PaymentStatus.FAILED }
+      });
+
       if (success && payment.order) {
         await tx.order.update({
           where: { id: payment.orderId },
           data: {
-            paymentStatus: PaymentStatus.PAID,
             status: payment.order.status === OrderStatus.PLACED ? OrderStatus.PLACED : payment.order.status,
             history:
               payment.order.status === OrderStatus.PLACED
@@ -233,13 +290,16 @@ export class PaymentsService {
       throw new NotFoundException('Payment not found');
     }
 
+    const amountMatches = payload?.amount ? Number(payload.amount) === Number(payment.amount) : true;
+    const orderMatches = payload?.orderId ? payload.orderId === payment.orderId : true;
+
     await this.prisma.paymentAttempt.create({
       data: {
         paymentId: payment.id,
         requestId: payload?.orderId ?? payload?.result ?? payload?.success,
         trackId,
         amount: payment.amount,
-        status: PaymentStatus.PENDING,
+        status: orderMatches && amountMatches ? PaymentStatus.PENDING : PaymentStatus.FAILED,
         rawResponse: payload,
         type: PaymentAttemptType.CALLBACK
       }
@@ -249,7 +309,15 @@ export class PaymentsService {
       return { paymentStatus: payment.status, message: 'already verified' };
     }
 
-    const successFlag = payload?.success === '1' || payload?.success === 1 || payload?.result === 100;
+    if (!orderMatches) {
+      await this.prisma.payment.update({ where: { id: payment.id }, data: { status: PaymentStatus.FAILED } });
+      await this.prisma.order.update({ where: { id: payment.orderId }, data: { paymentStatus: PaymentStatus.FAILED } });
+      await this.notifications.onPaymentFailed(payment.orderId);
+      return { paymentStatus: PaymentStatus.FAILED, message: 'orderId mismatch' };
+    }
+
+    const successFlag =
+      (payload?.success === '1' || payload?.success === 1 || payload?.result === 100) && amountMatches && orderMatches;
     if (!successFlag) {
       await this.prisma.$transaction(async (tx) => {
         await tx.payment.update({ where: { id: payment.id }, data: { status: PaymentStatus.FAILED } });

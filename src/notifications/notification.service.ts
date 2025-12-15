@@ -11,6 +11,8 @@ export class NotificationService {
   private customerTelegramBot?: TelegramBot;
   private vendorTelegramBot?: TelegramBot;
   private dispatcherQueue?: Queue;
+  private deadLetterQueue?: Queue;
+  private dispatcherWorker?: Worker;
   private httpClient: AxiosInstance;
 
   constructor(private readonly prisma: PrismaService) {
@@ -24,7 +26,7 @@ export class NotificationService {
       this.vendorTelegramBot = new TelegramBot(vendorToken, { polling: false });
     }
 
-    this.httpClient = axios.create({ baseURL: 'https://rest.melipayamak.com/api' });
+    this.httpClient = axios.create({ baseURL: 'https://rest.payamak-panel.com/api' });
     this.bootstrapDispatcher();
   }
 
@@ -55,44 +57,68 @@ export class NotificationService {
     chatId: string | number,
     message: string,
     opts?: (TelegramBot.SendMessageOptions & { target?: 'customer' | 'vendor' }) | undefined
-  ) {
+  ): Promise<{ providerMessageId?: string; providerStatus?: string }> {
     const botClient = opts?.target === 'vendor' ? this.vendorTelegramBot : this.customerTelegramBot;
     if (!botClient) {
       this.logger.warn('Telegram bot not configured for target');
-      return;
+      return {};
     }
     const { target: _target, ...sendOptions } = opts ?? {};
-    await botClient.sendMessage(chatId, message, { parse_mode: 'HTML', ...sendOptions });
+    const res = await botClient.sendMessage(chatId, message, { parse_mode: 'HTML', ...sendOptions });
+    return { providerMessageId: res.message_id?.toString(), providerStatus: 'SENT' };
   }
 
-  private async sendSmsDirect(phone: string, message: string) {
+  private async sendSmsDirect(
+    phone: string,
+    message: string
+  ): Promise<{ providerMessageId?: string; providerStatus?: string; error?: string }> {
     const username = process.env.MELIPAYAMAK_USERNAME;
     const password = process.env.MELIPAYAMAK_PASSWORD;
     const from = process.env.MELIPAYAMAK_FROM ?? process.env.MELIPAYAMAK_NUMBER;
 
     if (!username || !password || !from) {
       this.logger.warn('Melipayamak credentials missing; SMS skipped');
-      return;
+      return { error: 'credentials missing' };
     }
 
     try {
-      await this.httpClient.post('/send/simple', {
+      const payload = new URLSearchParams({
         username,
         password,
         to: phone,
         from,
-        text: message
+        text: message,
+        isflash: 'false'
       });
+      const { data } = await this.httpClient.post('/SendSMS/SendSMS', payload.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+      const providerStatus = data?.RetStatus !== undefined ? String(data.RetStatus) : undefined;
+      const providerMessageId = data?.Value !== undefined ? String(data.Value) : undefined;
+      const success = providerStatus === '1';
+      return success
+        ? { providerMessageId, providerStatus }
+        : { providerMessageId, providerStatus, error: data?.StrRetStatus ?? 'provider rejected request' };
     } catch (err) {
       this.logger.error(`Failed to send SMS to ${phone}: ${err instanceof Error ? err.message : err}`);
+      return { error: err instanceof Error ? err.message : 'unknown error' };
     }
   }
 
   private bootstrapDispatcher() {
     const connectionUrl = process.env.REDIS_URL || 'redis://localhost:6379';
     try {
-      this.dispatcherQueue = new Queue('notification-dispatcher', { connection: { url: connectionUrl } });
-      new Worker(
+      this.dispatcherQueue = new Queue('notification-dispatcher', {
+        connection: { url: connectionUrl },
+        defaultJobOptions: {
+          attempts: 5,
+          backoff: { type: 'exponential', delay: 3000 },
+          removeOnComplete: 1000,
+          removeOnFail: false
+        }
+      });
+      this.deadLetterQueue = new Queue('notification-dead-letter', { connection: { url: connectionUrl } });
+      this.dispatcherWorker = new Worker(
         'notification-dispatcher',
         async (job) => {
           const { logId, channel, recipient, message, options } = job.data as {
@@ -104,14 +130,24 @@ export class NotificationService {
           };
 
           try {
-            if (channel === NotificationChannel.TELEGRAM) {
-              await this.sendTelegramDirect(recipient, message, options);
-            } else {
-              await this.sendSmsDirect(recipient.toString(), message);
+            const result =
+              channel === NotificationChannel.TELEGRAM
+                ? await this.sendTelegramDirect(recipient, message, options)
+                : await this.sendSmsDirect(recipient.toString(), message);
+
+            if ((result as any)?.error) {
+              throw new Error((result as any).error);
             }
+
             await this.prisma.notificationLog.update({
               where: { id: logId },
-              data: { status: NotificationStatus.SENT, attempts: { increment: 1 }, lastError: null }
+              data: {
+                status: NotificationStatus.SENT,
+                attempts: { increment: 1 },
+                lastError: null,
+                providerMessageId: result?.providerMessageId,
+                providerStatus: result?.providerStatus
+              }
             });
           } catch (err) {
             await this.prisma.notificationLog.update({
@@ -130,6 +166,16 @@ export class NotificationService {
           concurrency: 5
         }
       );
+
+      this.dispatcherWorker.on('failed', async (job, err) => {
+        this.logger.error(`Notification job ${job.id} failed: ${err instanceof Error ? err.message : err}`);
+        if (job.attemptsMade >= (job.opts.attempts ?? 1)) {
+          await this.deadLetterQueue?.add('dead-letter', { ...job.data, failedReason: err?.toString?.() });
+        }
+      });
+      this.dispatcherWorker.on('stalled', (jobId) => {
+        this.logger.warn(`Notification job ${jobId} stalled`);
+      });
     } catch (err) {
       this.logger.warn(`Notification dispatcher disabled: ${err instanceof Error ? err.message : err}`);
     }
@@ -157,23 +203,31 @@ export class NotificationService {
       vendorId: opts.vendorId
     });
 
+    const sendDirect = async () => {
+      const result = await this.sendTelegramDirect(chatId, message, { ...opts.options, target: opts.target });
+      await this.prisma.notificationLog.update({
+        where: { id: log.id },
+        data: { status: NotificationStatus.SENT, attempts: 1, providerMessageId: result.providerMessageId, providerStatus: result.providerStatus }
+      });
+    };
+
     if (!this.dispatcherQueue) {
-      await this.sendTelegramDirect(chatId, message, { ...opts.options, target: opts.target });
-      await this.prisma.notificationLog.update({ where: { id: log.id }, data: { status: NotificationStatus.SENT, attempts: 1 } });
+      await sendDirect();
       return;
     }
 
-    await this.dispatcherQueue.add(
-      'send',
-      {
+    try {
+      await this.dispatcherQueue.add('send', {
         logId: log.id,
         channel: NotificationChannel.TELEGRAM,
         recipient: chatId,
         message,
         options: { ...opts.options, target: opts.target }
-      },
-      { attempts: 3, backoff: { type: 'exponential', delay: 2000 } }
-    );
+      });
+    } catch (err) {
+      this.logger.warn(`Falling back to direct telegram send for log ${log.id}: ${err instanceof Error ? err.message : err}`);
+      await sendDirect();
+    }
   }
 
   async sendSms(phone: string, message: string, meta?: { eventName?: string; orderId?: string; userId?: string; vendorId?: string }) {
@@ -187,16 +241,30 @@ export class NotificationService {
       vendorId: meta?.vendorId
     });
 
+    const sendDirect = async () => {
+      const result = await this.sendSmsDirect(phone, message);
+      await this.prisma.notificationLog.update({
+        where: { id: log.id },
+        data: {
+          status: result.error ? NotificationStatus.FAILED : NotificationStatus.SENT,
+          attempts: 1,
+          lastError: result.error,
+          providerMessageId: result.providerMessageId,
+          providerStatus: result.providerStatus
+        }
+      });
+    };
+
     if (!this.dispatcherQueue) {
-      await this.sendSmsDirect(phone, message);
-      await this.prisma.notificationLog.update({ where: { id: log.id }, data: { status: NotificationStatus.SENT, attempts: 1 } });
+      await sendDirect();
       return;
     }
 
-    await this.dispatcherQueue.add(
-      'send',
-      { logId: log.id, channel: NotificationChannel.SMS, recipient: phone, message },
-      { attempts: 3, backoff: { type: 'exponential', delay: 2000 } }
-    );
+    try {
+      await this.dispatcherQueue.add('send', { logId: log.id, channel: NotificationChannel.SMS, recipient: phone, message });
+    } catch (err) {
+      this.logger.warn(`Falling back to direct SMS send for log ${log.id}: ${err instanceof Error ? err.message : err}`);
+      await sendDirect();
+    }
   }
 }
