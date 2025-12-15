@@ -32,11 +32,15 @@ export default function OrderDetailPage() {
             <p className="text-sm text-slate-300">مبلغ: {Number(order.totalPrice).toLocaleString()} تومان</p>
             <p className="text-sm text-slate-300">پرداخت: {order.paymentStatus}</p>
             <p className="text-sm text-slate-300">
-              ارسال: {order.deliveryProvider || order.deliveryType} {order.isCOD ? '(پس‌کرایه)' : ''}
+              ارسال: {order.deliveryProvider || order.deliveryType}{' '}
+              {order.outOfZone ? '(خارج از محدوده)' : ''} {order.isCOD ? '(پس‌کرایه)' : ''}
             </p>
-            {order.deliveryFeeEstimated && (
+            {order.deliverySettlementType === 'COD' && (
+              <p className="text-xs text-amber-200">هزینه پیک هنگام تحویل پرداخت می‌شود.</p>
+            )}
+            {order.deliveryFeeEstimate && (
               <p className="text-sm text-slate-300">
-                برآورد هزینه پیک: {Number(order.deliveryFeeEstimated).toLocaleString()} تومان
+                برآورد هزینه پیک: {Number(order.deliveryFeeEstimate).toLocaleString()} تومان
               </p>
             )}
             <div className="space-y-2">

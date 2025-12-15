@@ -59,7 +59,12 @@ export class PaymentsService {
     const signatureHeader = headers?.['x-zibal-signature'] ?? headers?.['X-Zibal-Signature'];
     const timestamp = headers?.['x-zibal-timestamp'] ?? headers?.['X-Zibal-Timestamp'];
     const body = JSON.stringify(payload ?? {});
-    if (!secret) return true;
+    if (!secret) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new UnauthorizedException('callback signature required');
+      }
+      return true;
+    }
     if (!signatureHeader) throw new UnauthorizedException('missing signature');
     if (timestamp) {
       const skew = Math.abs(Date.now() - Number(timestamp));
@@ -108,12 +113,12 @@ export class PaymentsService {
   }
 
   async requestZibal(orderId: string, userId: string) {
-    this.rateLimit.assertWithinLimit(`payment-request:${userId}`, 5, 10 * 60 * 1000);
+    this.rateLimit.assertWithinLimit(`payment-request:${userId}`, 3, 10 * 60 * 1000);
     const order = await this.prisma.order.findUnique({ where: { id: orderId }, include: { payment: true } });
     if (!order || order.userId !== userId) {
       throw new NotFoundException('Order not found');
     }
-    if (order.paymentStatus === PaymentStatus.NONE || order.deliverySettlementType === DeliverySettlementType.POSTPAID) {
+    if (order.paymentStatus === PaymentStatus.NONE || order.deliverySettlementType === DeliverySettlementType.COD) {
       throw new BadRequestException('پرداخت برای این سفارش نیاز نیست');
     }
     if (order.paymentStatus === PaymentStatus.PAID) {
@@ -236,7 +241,7 @@ export class PaymentsService {
     if (!skipReplayGuard) {
       await this.guardReplay(trackId, headers?.['x-zibal-signature']);
     }
-    this.rateLimit.assertWithinLimit(`payment-verify:${trackId}`, 10, 10 * 60 * 1000);
+    this.rateLimit.assertWithinLimit(`payment-verify:${trackId}`, 5, 10 * 60 * 1000);
     const payment = await this.prisma.payment.findFirst({ where: { trackId }, include: { order: true } });
     if (!payment) {
       throw new NotFoundException('Payment not found');
@@ -277,7 +282,9 @@ export class PaymentsService {
         where: { id: payment.id },
         data: {
           status: success ? PaymentStatus.PAID : PaymentStatus.FAILED,
-          verifiedAt: verifiedAt ?? latest.verifiedAt
+          verifiedAt: verifiedAt ?? latest.verifiedAt,
+          refNumber: verifyData?.refNumber ?? latest.refNumber,
+          transactionId: verifyData?.refNumber ?? latest.transactionId
         }
       });
 
@@ -365,7 +372,7 @@ export class PaymentsService {
 
     this.validateSignature(payload, headers);
     await this.guardReplay(trackId, headers?.['x-zibal-signature']);
-    this.rateLimit.assertWithinLimit(`payment-callback:${trackId}`, 20, 60 * 60 * 1000);
+    this.rateLimit.assertWithinLimit(`payment-callback:${trackId}`, 5, 30 * 60 * 1000);
 
     const payment = await this.prisma.payment.findFirst({ where: { trackId }, include: { order: true } });
     if (!payment) {

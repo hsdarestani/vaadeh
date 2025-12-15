@@ -24,11 +24,12 @@ export type Order = {
   status: string;
   totalPrice: string;
   deliveryFee: string;
-  deliveryFeeEstimated?: string | null;
+  deliveryFeeEstimate?: string | null;
   paymentStatus: string;
   deliveryType?: string;
   deliveryProvider?: string;
   deliverySettlementType?: string | null;
+  outOfZone?: boolean;
   isCOD?: boolean;
   courierStatus?: string;
   vendor?: { id: string; name: string };
@@ -42,6 +43,31 @@ export type Vendor = {
   isActive: boolean;
   serviceRadiusKm: number;
   telegramChatId?: string | null;
+};
+
+type StageDurations = {
+  placedToAccepted: number;
+  acceptedToReady: number;
+  readyToDelivered: number;
+  placedToDelivered: number;
+};
+
+type DailyKpi = {
+  date: string;
+  orders: number;
+  gmv: number;
+  cancelRate: number;
+  averageSeconds: StageDurations;
+};
+
+type VendorPerformance = {
+  vendorId: string;
+  vendorName?: string;
+  orders: number;
+  sales: number;
+  rejected: number;
+  rejectionRate: number;
+  averageSeconds: StageDurations;
 };
 
 export type KPI = {
@@ -58,6 +84,9 @@ export type KPI = {
   codRatio: number;
   deliveryMix: { inRange: number; outOfRange: number; outOfZonePercent: number };
   ordersPerDay: Record<string, number>;
+  stageDurations: StageDurations;
+  dailyKpis: DailyKpi[];
+  vendorPerformance: VendorPerformance[];
 };
 
 export type Payment = {
@@ -282,6 +311,12 @@ export default function Dashboard() {
     window.open(link, '_blank');
   };
 
+  const formatSeconds = (seconds: number) => {
+    if (!seconds || Number.isNaN(seconds)) return '—';
+    if (seconds >= 90) return `${(seconds / 60).toFixed(1)} دقیقه`;
+    return `${seconds.toFixed(0)} ثانیه`;
+  };
+
   const updateOrder = async (orderId: string) => {
     const draft = orderDrafts[orderId] ?? {};
     await apiFetch(`/admin/orders/${orderId}`, {
@@ -454,6 +489,95 @@ export default function Dashboard() {
                 ))}
             </div>
           </div>
+
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="card">
+              <p className="text-sm text-slate-500">PLACED → ACCEPTED</p>
+              <p className="text-xl font-semibold">{formatSeconds(kpis.stageDurations.placedToAccepted)}</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">ACCEPTED → READY</p>
+              <p className="text-xl font-semibold">{formatSeconds(kpis.stageDurations.acceptedToReady)}</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">READY → DELIVERED</p>
+              <p className="text-xl font-semibold">{formatSeconds(kpis.stageDurations.readyToDelivered)}</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">PLACED → DELIVERED</p>
+              <p className="text-xl font-semibold">{formatSeconds(kpis.stageDurations.placedToDelivered)}</p>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold">KPI روزانه (۷ روز)</h3>
+              <span className="text-sm text-slate-500">سفارش، GMV، لغو، SLA</span>
+            </div>
+            <div className="overflow-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left">
+                    <th className="py-2 px-1">تاریخ</th>
+                    <th className="py-2 px-1">سفارش</th>
+                    <th className="py-2 px-1">GMV</th>
+                    <th className="py-2 px-1">لغو</th>
+                    <th className="py-2 px-1">پذیرش</th>
+                    <th className="py-2 px-1">آمادگی</th>
+                    <th className="py-2 px-1">تحویل</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {kpis.dailyKpis.map((day) => (
+                    <tr key={day.date} className="border-t">
+                      <td className="py-1 px-1">{day.date}</td>
+                      <td className="py-1 px-1">{day.orders}</td>
+                      <td className="py-1 px-1">{day.gmv.toLocaleString()}</td>
+                      <td className="py-1 px-1">{(day.cancelRate * 100).toFixed(1)}%</td>
+                      <td className="py-1 px-1">{formatSeconds(day.averageSeconds.placedToAccepted)}</td>
+                      <td className="py-1 px-1">{formatSeconds(day.averageSeconds.acceptedToReady)}</td>
+                      <td className="py-1 px-1">{formatSeconds(day.averageSeconds.readyToDelivered)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold">عملکرد وندورها</h3>
+              <span className="text-sm text-slate-500">حجم، لغو، SLA</span>
+            </div>
+            <div className="overflow-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left">
+                    <th className="py-2 px-1">وندور</th>
+                    <th className="py-2 px-1">سفارش</th>
+                    <th className="py-2 px-1">GMV</th>
+                    <th className="py-2 px-1">نرخ لغو</th>
+                    <th className="py-2 px-1">پذیرش</th>
+                    <th className="py-2 px-1">آمادگی</th>
+                    <th className="py-2 px-1">تحویل</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {kpis.vendorPerformance.map((vendor) => (
+                    <tr key={vendor.vendorId} className="border-t">
+                      <td className="py-1 px-1 font-semibold">{vendor.vendorName ?? vendor.vendorId}</td>
+                      <td className="py-1 px-1">{vendor.orders}</td>
+                      <td className="py-1 px-1">{vendor.sales.toLocaleString()}</td>
+                      <td className="py-1 px-1">{(vendor.rejectionRate * 100).toFixed(1)}%</td>
+                      <td className="py-1 px-1">{formatSeconds(vendor.averageSeconds.placedToAccepted)}</td>
+                      <td className="py-1 px-1">{formatSeconds(vendor.averageSeconds.acceptedToReady)}</td>
+                      <td className="py-1 px-1">{formatSeconds(vendor.averageSeconds.readyToDelivered)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 
@@ -577,11 +701,12 @@ export default function Dashboard() {
                       <span className="px-2 py-1 rounded bg-slate-100 text-slate-700">
                         {order.deliveryProvider || order.deliveryType || 'N/A'}
                       </span>
-                      {order.deliveryFeeEstimated && (
+                      {order.deliveryFeeEstimate && (
                         <span className="px-2 py-1 rounded bg-slate-50 text-slate-600">
-                          برآورد پیک: {Number(order.deliveryFeeEstimated).toLocaleString()} تومان
+                          برآورد پیک: {Number(order.deliveryFeeEstimate).toLocaleString()} تومان
                         </span>
                       )}
+                      {order.outOfZone && <span className="px-2 py-1 rounded bg-rose-100 text-rose-800">خارج محدوده</span>}
                       {order.isCOD && <span className="px-2 py-1 rounded bg-amber-100 text-amber-800">COD / پس‌کرایه</span>}
                       {order.courierStatus && (
                         <span className="px-2 py-1 rounded bg-blue-100 text-blue-800">پیک: {order.courierStatus}</span>

@@ -117,7 +117,7 @@ export default function CheckoutPage() {
                   setCodConfirmed(false);
                 }}
               />
-              ارسال با پیک اسنپ / پرداخت در مقصد
+              ارسال با پیک اسنپ / پرداخت در مقصد (خارج از محدوده یا پس‌کرایه)
             </label>
             {payAtDelivery && (
               <label className="flex items-center gap-2 text-xs text-amber-200 bg-amber-900/20 p-3 rounded">
@@ -128,6 +128,12 @@ export default function CheckoutPage() {
                 />
                 تایید می‌کنم هزینه ارسال با پیک اسنپ به صورت پس‌کرایه توسط من پرداخت می‌شود.
               </label>
+            )}
+            {!payAtDelivery && (
+              <p className="text-xs text-slate-400">
+                خارج از محدوده‌ها به صورت پیش‌فرض با پیک اسنپ و پس‌کرایه ارسال می‌شود؛ در صورت انتخاب پرداخت
+                آنلاین، هزینه ارسال جداگانه هنگام تحویل از شما گرفته خواهد شد.
+              </p>
             )}
           </div>
 

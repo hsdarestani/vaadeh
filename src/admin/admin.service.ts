@@ -225,119 +225,240 @@ export class AdminService {
     const since = new Date();
     since.setDate(since.getDate() - 6);
 
-    const [
-      dailyOrders,
-      totalOrders,
-      cancelledOrders,
-      verifiedPayments,
-      vendorGroup,
-      outOfRange,
-      inRange,
-      paymentRequested,
-      paymentPaid,
-      paymentFailed,
-      histories,
-      recentOrders,
-      codOrders,
-      prepaidOrders
-    ] = await Promise.all([
-      this.prisma.order.count({ where: { createdAt: { gte: today } } }),
-      this.prisma.order.count(),
-      this.prisma.order.count({ where: { status: { in: [OrderStatus.CANCELLED, OrderStatus.VENDOR_REJECTED] } } }),
+    const [vendorNames, paymentsAggregate, ordersWithHistory, paymentStatusCounts, totalOrders, cancelledOrders] = await Promise.all([
+      this.prisma.vendor.findMany({ select: { id: true, name: true } }),
       this.prisma.payment.aggregate({ _sum: { amount: true }, where: { status: PaymentStatus.PAID } }),
-      this.prisma.order.groupBy({ by: ['vendorId'], _count: { _all: true }, _sum: { totalPrice: true } }),
-      this.prisma.order.count({ where: { deliveryType: DeliveryType.SNAPP_COURIER_OUT_OF_ZONE } }),
-      this.prisma.order.count({ where: { deliveryType: DeliveryType.IN_ZONE_INTERNAL } }),
-      this.prisma.payment.count({ where: { status: PaymentStatus.PENDING } }),
-      this.prisma.payment.count({ where: { status: PaymentStatus.PAID } }),
-      this.prisma.payment.count({ where: { status: PaymentStatus.FAILED } }),
-      this.prisma.orderStatusHistory.findMany({
-        where: { status: { in: [OrderStatus.PLACED, OrderStatus.VENDOR_ACCEPTED, OrderStatus.DELIVERED] } },
-        orderBy: { changedAt: 'asc' }
-      }),
       this.prisma.order.findMany({
         where: { createdAt: { gte: since } },
-        select: { createdAt: true, status: true, deliveryType: true, isCOD: true }
+        select: {
+          id: true,
+          vendorId: true,
+          createdAt: true,
+          status: true,
+          totalPrice: true,
+          deliveryFeeFinal: true,
+          deliveryFee: true,
+          deliveryType: true,
+          isCOD: true,
+          history: { select: { status: true, changedAt: true } }
+        }
       }),
-      this.prisma.order.count({ where: { isCOD: true, createdAt: { gte: since } } }),
-      this.prisma.order.count({ where: { isCOD: false, createdAt: { gte: since } } })
+      Promise.all([
+        this.prisma.payment.count({ where: { status: PaymentStatus.PENDING } }),
+        this.prisma.payment.count({ where: { status: PaymentStatus.PAID } }),
+        this.prisma.payment.count({ where: { status: PaymentStatus.FAILED } })
+      ]),
+      this.prisma.order.count(),
+      this.prisma.order.count({ where: { status: { in: [OrderStatus.CANCELLED, OrderStatus.VENDOR_REJECTED] } } })
     ]);
 
-    const vendorNames = await this.prisma.vendor.findMany({ select: { id: true, name: true } });
     const vendorLookup = new Map(vendorNames.map((v) => [v.id, v.name]));
-
-    const timingByOrder = histories.reduce(
-      (acc, item) => {
-        const current = acc.get(item.orderId) ?? {};
-        acc.set(item.orderId, { ...current, [item.status]: item.changedAt });
-        return acc;
-      },
-      new Map<string, Partial<Record<OrderStatus, Date>>>()
-    );
-
-    let acceptanceTotal = 0;
-    let acceptanceCount = 0;
-    let completionTotal = 0;
-    let completionCount = 0;
-
-    timingByOrder.forEach((timings) => {
-      if (timings[OrderStatus.PLACED] && timings[OrderStatus.VENDOR_ACCEPTED]) {
-        acceptanceTotal +=
-          (timings[OrderStatus.VENDOR_ACCEPTED].getTime() - timings[OrderStatus.PLACED].getTime()) / 1000;
-        acceptanceCount += 1;
-      }
-      if (timings[OrderStatus.PLACED] && timings[OrderStatus.DELIVERED]) {
-        completionTotal +=
-          (timings[OrderStatus.DELIVERED].getTime() - timings[OrderStatus.PLACED].getTime()) / 1000;
-        completionCount += 1;
-      }
-    });
 
     const ordersPerDay: Record<string, number> = {};
     for (let i = 0; i < 7; i += 1) {
-      const date = new Date();
-      date.setDate(today.getDate() - i);
-      const key = date.toISOString().slice(0, 10);
-      ordersPerDay[key] = 0;
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      ordersPerDay[d.toISOString().slice(0, 10)] = 0;
     }
-
-    recentOrders.forEach((order) => {
-      const key = order.createdAt.toISOString().slice(0, 10);
-      if (ordersPerDay[key] !== undefined) {
-        ordersPerDay[key] += 1;
+    const dailyBuckets: Record<
+      string,
+      {
+        orders: number;
+        gmv: number;
+        cancelled: number;
+        stageTotals: Record<string, { sum: number; count: number }>;
       }
+    > = {};
+
+    const stageTotals: Record<string, { sum: number; count: number }> = {
+      placedToAccepted: { sum: 0, count: 0 },
+      acceptedToReady: { sum: 0, count: 0 },
+      readyToDelivered: { sum: 0, count: 0 },
+      placedToDelivered: { sum: 0, count: 0 }
+    };
+
+    const vendorPerformance = new Map<
+      string,
+      {
+        vendorId: string;
+        vendorName?: string;
+        orders: number;
+        sales: number;
+        rejected: number;
+        accepted: number;
+        ready: number;
+        delivered: number;
+        stageTotals: Record<string, { sum: number; count: number }>;
+      }
+    >();
+
+    const calcDurations = (history: { status: OrderStatus; changedAt: Date }[]) => {
+      const timeline = history.reduce((acc, h) => {
+        acc[h.status] = h.changedAt;
+        return acc;
+      }, {} as Record<OrderStatus, Date>);
+
+      const placedAt = timeline[OrderStatus.PLACED];
+      const acceptedAt = timeline[OrderStatus.VENDOR_ACCEPTED];
+      const readyAt = timeline[OrderStatus.READY];
+      const deliveredAt = timeline[OrderStatus.DELIVERED];
+
+      const diffSeconds = (a?: Date, b?: Date) => (a && b ? (b.getTime() - a.getTime()) / 1000 : null);
+
+      return {
+        placedToAccepted: diffSeconds(placedAt, acceptedAt),
+        acceptedToReady: diffSeconds(acceptedAt, readyAt),
+        readyToDelivered: diffSeconds(readyAt, deliveredAt),
+        placedToDelivered: diffSeconds(placedAt, deliveredAt)
+      };
+    };
+
+    const track = (target: { sum: number; count: number }, value: number | null) => {
+      if (value !== null && Number.isFinite(value)) {
+        target.sum += value;
+        target.count += 1;
+      }
+    };
+
+    ordersWithHistory.forEach((order) => {
+      const bucketKey = order.createdAt.toISOString().slice(0, 10);
+      const bucket =
+        dailyBuckets[bucketKey] ??
+        (dailyBuckets[bucketKey] = {
+          orders: 0,
+          gmv: 0,
+          cancelled: 0,
+          stageTotals: {
+            placedToAccepted: { sum: 0, count: 0 },
+            acceptedToReady: { sum: 0, count: 0 },
+            readyToDelivered: { sum: 0, count: 0 },
+            placedToDelivered: { sum: 0, count: 0 }
+          }
+        });
+
+      ordersPerDay[bucketKey] = (ordersPerDay[bucketKey] ?? 0) + 1;
+      bucket.orders += 1;
+
+      const orderGmv = Number(order.totalPrice ?? 0) + Number(order.deliveryFeeFinal ?? order.deliveryFee ?? 0);
+      bucket.gmv += orderGmv;
+
+      if ([OrderStatus.CANCELLED, OrderStatus.VENDOR_REJECTED].includes(order.status)) {
+        bucket.cancelled += 1;
+      }
+
+      const vendorRow =
+        vendorPerformance.get(order.vendorId) ??
+        vendorPerformance.set(order.vendorId, {
+          vendorId: order.vendorId,
+          vendorName: vendorLookup.get(order.vendorId),
+          orders: 0,
+          sales: 0,
+          rejected: 0,
+          accepted: 0,
+          ready: 0,
+          delivered: 0,
+          stageTotals: {
+            placedToAccepted: { sum: 0, count: 0 },
+            acceptedToReady: { sum: 0, count: 0 },
+            readyToDelivered: { sum: 0, count: 0 },
+            placedToDelivered: { sum: 0, count: 0 }
+          }
+        }).get(order.vendorId)!;
+
+      vendorRow.orders += 1;
+      vendorRow.sales += orderGmv;
+      if (order.status === OrderStatus.VENDOR_REJECTED || order.status === OrderStatus.CANCELLED) {
+        vendorRow.rejected += 1;
+      }
+      if (order.status === OrderStatus.VENDOR_ACCEPTED) vendorRow.accepted += 1;
+      if (order.status === OrderStatus.READY) vendorRow.ready += 1;
+      if (order.status === OrderStatus.DELIVERED) vendorRow.delivered += 1;
+
+      const durations = calcDurations(order.history ?? []);
+      Object.entries(durations).forEach(([key, value]) => {
+        track(stageTotals[key], value);
+        track(bucket.stageTotals[key], value);
+        track(vendorRow.stageTotals[key], value);
+      });
     });
 
-    const accepted = recentOrders.filter((order) => order.status === OrderStatus.VENDOR_ACCEPTED).length;
-    const placed = recentOrders.filter((order) => order.status !== OrderStatus.CANCELLED && order.status !== OrderStatus.VENDOR_REJECTED)
-      .length;
+    const codOrders = ordersWithHistory.filter((o) => o.isCOD).length;
+    const prepaidOrders = ordersWithHistory.length - codOrders;
+    const ordersThisWeek = ordersWithHistory.length;
 
-    const ordersThisWeek = recentOrders.length;
+    const deliveryMixCounts = ordersWithHistory.reduce(
+      (acc, order) => {
+        if (order.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE) acc.outOfRange += 1;
+        if (order.deliveryType === DeliveryType.IN_ZONE_INTERNAL) acc.inRange += 1;
+        return acc;
+      },
+      { inRange: 0, outOfRange: 0 }
+    );
+
+    const paymentRequested = paymentStatusCounts[0];
+    const paymentPaid = paymentStatusCounts[1];
+    const paymentFailed = paymentStatusCounts[2];
+
+    const stageAverage = (target: { sum: number; count: number }) => (target.count ? target.sum / target.count : 0);
+
+    const dailyKpis = Object.entries(dailyBuckets)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, bucket]) => ({
+        date,
+        orders: bucket.orders,
+        gmv: bucket.gmv,
+        cancelRate: bucket.orders ? bucket.cancelled / bucket.orders : 0,
+        averageSeconds: {
+          placedToAccepted: stageAverage(bucket.stageTotals.placedToAccepted),
+          acceptedToReady: stageAverage(bucket.stageTotals.acceptedToReady),
+          readyToDelivered: stageAverage(bucket.stageTotals.readyToDelivered),
+          placedToDelivered: stageAverage(bucket.stageTotals.placedToDelivered)
+        }
+      }));
+
+    const accepted = ordersWithHistory.filter((order) => order.status === OrderStatus.VENDOR_ACCEPTED).length;
+    const placed = ordersWithHistory.filter(
+      (order) => order.status !== OrderStatus.CANCELLED && order.status !== OrderStatus.VENDOR_REJECTED
+    ).length;
 
     return {
-      dailyOrders,
+      dailyOrders: ordersPerDay[today.toISOString().slice(0, 10)] ?? 0,
       ordersThisWeek,
-      totalSales: Number(verifiedPayments._sum.amount ?? 0),
+      totalSales: Number(paymentsAggregate._sum.amount ?? 0),
       cancelRate: totalOrders ? cancelledOrders / totalOrders : 0,
       acceptanceRate: placed ? accepted / placed : 0,
-      vendorPerformance: vendorGroup.map((group) => ({
-        vendorId: group.vendorId,
-        vendorName: vendorLookup.get(group.vendorId),
-        orders: group._count._all,
-        sales: Number(group._sum.totalPrice ?? 0)
+      vendorPerformance: Array.from(vendorPerformance.values()).map((vendor) => ({
+        ...vendor,
+        rejectionRate: vendor.orders ? vendor.rejected / vendor.orders : 0,
+        averageSeconds: {
+          placedToAccepted: stageAverage(vendor.stageTotals.placedToAccepted),
+          acceptedToReady: stageAverage(vendor.stageTotals.acceptedToReady),
+          readyToDelivered: stageAverage(vendor.stageTotals.readyToDelivered),
+          placedToDelivered: stageAverage(vendor.stageTotals.placedToDelivered)
+        }
       })),
       deliveryMix: {
-        inRange,
-        outOfRange,
-        outOfZonePercent: inRange + outOfRange ? outOfRange / (inRange + outOfRange) : 0
+        inRange: deliveryMixCounts.inRange,
+        outOfRange: deliveryMixCounts.outOfRange,
+        outOfZonePercent:
+          deliveryMixCounts.inRange + deliveryMixCounts.outOfRange
+            ? deliveryMixCounts.outOfRange / (deliveryMixCounts.inRange + deliveryMixCounts.outOfRange)
+            : 0
       },
       paymentConversion: paymentRequested ? paymentPaid / paymentRequested : 0,
       paymentSuccessRate: paymentPaid + paymentFailed > 0 ? paymentPaid / (paymentPaid + paymentFailed) : 0,
-      averageSecondsToAccept: acceptanceCount ? acceptanceTotal / acceptanceCount : 0,
-      averageSecondsToComplete: completionCount ? completionTotal / completionCount : 0,
-      averageFulfillmentSeconds: completionCount ? completionTotal / completionCount : 0,
+      averageSecondsToAccept: stageAverage(stageTotals.placedToAccepted),
+      averageSecondsToComplete: stageAverage(stageTotals.placedToDelivered),
+      averageFulfillmentSeconds: stageAverage(stageTotals.placedToDelivered),
+      stageDurations: {
+        placedToAccepted: stageAverage(stageTotals.placedToAccepted),
+        acceptedToReady: stageAverage(stageTotals.acceptedToReady),
+        readyToDelivered: stageAverage(stageTotals.readyToDelivered),
+        placedToDelivered: stageAverage(stageTotals.placedToDelivered)
+      },
       codRatio: codOrders + prepaidOrders > 0 ? codOrders / (codOrders + prepaidOrders) : 0,
-      ordersPerDay
+      ordersPerDay,
+      dailyKpis
     };
   }
 

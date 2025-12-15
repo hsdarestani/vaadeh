@@ -1,0 +1,98 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-vaadeh}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres}']
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 20s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ..
+    env_file:
+      - ../.env
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-vaadeh}?schema=public}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: sh -c "npx prisma migrate deploy && npm run build && npm run start:prod"
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/api/health || exit 1']
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  admin-ui:
+    build:
+      context: ../admin-ui
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:3000/api}
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:3000/api}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "3001:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --no-check-certificate -qO- http://localhost:3000 || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  customer-ui:
+    build:
+      context: ../customer-ui
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:3000/api}
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:3000/api}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "3002:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --no-check-certificate -qO- http://localhost:3000 || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data: {}

@@ -1,4 +1,4 @@
-import { PrismaClient, DeliveryType, OrderStatus, PaymentProvider, PaymentStatus, UserRole, Prisma } from '@prisma/client';
+import { PrismaClient, DeliveryType, OrderStatus, PaymentProvider, PaymentStatus, UserRole, Prisma, DeliverySettlementType } from '@prisma/client';
 import { config } from 'dotenv';
 
 config();
@@ -66,10 +66,14 @@ async function main() {
         lng: address.lng,
         fullAddress: address.fullAddress
       },
-      deliveryType: DeliveryType.IN_RANGE,
+      deliveryType: DeliveryType.IN_ZONE_INTERNAL,
+      deliverySettlementType: DeliverySettlementType.PREPAID,
       deliveryFee: new Prisma.Decimal(0),
+      deliveryFeeEstimate: new Prisma.Decimal(0),
+      deliveryFeeFinal: new Prisma.Decimal(0),
       totalPrice: new Prisma.Decimal(570000),
-      status: OrderStatus.COMPLETED,
+      status: OrderStatus.DELIVERED,
+      paymentStatus: PaymentStatus.PAID,
       locationLat: address.lat,
       locationLng: address.lng,
       items: {
@@ -80,10 +84,10 @@ async function main() {
       },
       history: {
         create: [
-          { status: OrderStatus.PENDING, note: 'seed pending' },
-          { status: OrderStatus.ACCEPTED, note: 'seed accepted' },
-          { status: OrderStatus.DELIVERY_INTERNAL, note: 'seed delivering' },
-          { status: OrderStatus.COMPLETED, note: 'seed completed' }
+          { status: OrderStatus.PLACED, note: 'seed placed' },
+          { status: OrderStatus.VENDOR_ACCEPTED, note: 'seed accepted' },
+          { status: OrderStatus.READY, note: 'seed ready' },
+          { status: OrderStatus.DELIVERED, note: 'seed delivered' }
         ]
       }
     }
@@ -96,7 +100,7 @@ async function main() {
       provider: PaymentProvider.ZIBAL,
       trackId: `seed-${Date.now()}`,
       amount: new Prisma.Decimal(570000),
-      status: PaymentStatus.VERIFIED,
+      status: PaymentStatus.PAID,
       verifiedAt: new Date()
     }
   });
