@@ -114,10 +114,14 @@ export class AdminService {
     const updated = await this.prisma.order.update({ where: { id: orderId }, data });
 
     if (dto.status) {
-      if (dto.status === OrderStatus.ACCEPTED) {
+      if (dto.status === OrderStatus.VENDOR_ACCEPTED) {
         await this.notifications.onVendorAccepted(orderId);
       }
-      if ([OrderStatus.DELIVERY_INTERNAL, OrderStatus.DELIVERY_SNAPP, OrderStatus.COMPLETED].includes(dto.status)) {
+      if (
+        [OrderStatus.READY, OrderStatus.COURIER_ASSIGNED, OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED].includes(
+          dto.status
+        )
+      ) {
         await this.notifications.onDelivery(orderId, dto.status);
       }
     }
@@ -127,6 +131,7 @@ export class AdminService {
         orderId,
         userId: order.userId,
         vendorId: order.vendorId,
+        actorType: EventActorType.ADMIN,
         metadata: {
           previousStatus: order.status,
           nextStatus: dto.status ?? order.status,
@@ -184,15 +189,15 @@ export class AdminService {
     ] = await Promise.all([
       this.prisma.order.count({ where: { createdAt: { gte: today } } }),
       this.prisma.order.count(),
-      this.prisma.order.count({ where: { status: { in: [OrderStatus.CANCELLED, OrderStatus.REJECTED] } } }),
-      this.prisma.payment.aggregate({ _sum: { amount: true }, where: { status: PaymentStatus.VERIFIED } }),
+      this.prisma.order.count({ where: { status: { in: [OrderStatus.CANCELLED, OrderStatus.VENDOR_REJECTED] } } }),
+      this.prisma.payment.aggregate({ _sum: { amount: true }, where: { status: PaymentStatus.PAID } }),
       this.prisma.order.groupBy({ by: ['vendorId'], _count: { _all: true }, _sum: { totalPrice: true } }),
-      this.prisma.order.count({ where: { deliveryType: DeliveryType.SNAPP_COD } }),
-      this.prisma.order.count({ where: { deliveryType: DeliveryType.IN_RANGE } }),
+      this.prisma.order.count({ where: { deliveryType: DeliveryType.SNAPP_COURIER_OUT_OF_ZONE } }),
+      this.prisma.order.count({ where: { deliveryType: DeliveryType.IN_ZONE_INTERNAL } }),
       this.prisma.payment.count({ where: { status: PaymentStatus.PENDING } }),
-      this.prisma.payment.count({ where: { status: PaymentStatus.VERIFIED } }),
+      this.prisma.payment.count({ where: { status: PaymentStatus.PAID } }),
       this.prisma.orderStatusHistory.findMany({
-        where: { status: { in: [OrderStatus.PENDING, OrderStatus.ACCEPTED, OrderStatus.COMPLETED] } },
+        where: { status: { in: [OrderStatus.PLACED, OrderStatus.VENDOR_ACCEPTED, OrderStatus.DELIVERED] } },
         orderBy: { changedAt: 'asc' }
       })
     ]);
@@ -215,14 +220,14 @@ export class AdminService {
     let completionCount = 0;
 
     timingByOrder.forEach((timings) => {
-      if (timings[OrderStatus.PENDING] && timings[OrderStatus.ACCEPTED]) {
+      if (timings[OrderStatus.PLACED] && timings[OrderStatus.VENDOR_ACCEPTED]) {
         acceptanceTotal +=
-          (timings[OrderStatus.ACCEPTED].getTime() - timings[OrderStatus.PENDING].getTime()) / 1000;
+          (timings[OrderStatus.VENDOR_ACCEPTED].getTime() - timings[OrderStatus.PLACED].getTime()) / 1000;
         acceptanceCount += 1;
       }
-      if (timings[OrderStatus.PENDING] && timings[OrderStatus.COMPLETED]) {
+      if (timings[OrderStatus.PLACED] && timings[OrderStatus.DELIVERED]) {
         completionTotal +=
-          (timings[OrderStatus.COMPLETED].getTime() - timings[OrderStatus.PENDING].getTime()) / 1000;
+          (timings[OrderStatus.DELIVERED].getTime() - timings[OrderStatus.PLACED].getTime()) / 1000;
         completionCount += 1;
       }
     });
@@ -253,6 +258,10 @@ export class AdminService {
 
   notificationLog() {
     return this.prisma.notificationLog.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
+  }
+
+  eventLog() {
+    return this.prisma.eventLog.findMany({ orderBy: { createdAt: 'desc' }, take: 100 });
   }
 
   private async ensureVendorExists(vendorId: string) {

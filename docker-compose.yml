@@ -4,30 +4,40 @@ services:
   app:
     build: .
     env_file:
-      - .env.example
+      - .env
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vaadeh?schema=public
       REDIS_URL: redis://redis:6379
+      NODE_ENV: production
     ports:
       - '3000:3000'
     depends_on:
       - postgres
       - redis
-    command: sh -c "npm run start:dev"
-    volumes:
-      - .:/app
-      - /app/node_modules
+    command: sh -c "npm run build && npm run start:prod"
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/api || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 5
 
   admin-ui:
     build: ./admin-ui
     env_file:
-      - .env.example
+      - .env
     environment:
       NEXT_PUBLIC_API_BASE: http://nginx/api
     ports:
       - '3001:3000'
     depends_on:
       - app
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000 || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 5
 
   nginx:
     image: nginx:1.25-alpine
@@ -38,6 +48,7 @@ services:
     depends_on:
       - app
       - admin-ui
+    restart: unless-stopped
 
   postgres:
     image: postgres:16-alpine
@@ -49,11 +60,23 @@ services:
       - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 30s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
     ports:
       - '6379:6379'
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 30s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data: {}

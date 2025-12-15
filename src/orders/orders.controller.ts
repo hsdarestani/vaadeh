@@ -18,7 +18,7 @@ export class OrdersController {
   }
 
   @Patch(':id/status')
-  updateStatus(@Param('id') id: string, @Body('status') status: OrderStatus) {
-    return this.orders.transition(id, status);
+  updateStatus(@Param('id') id: string, @Body('status') status: OrderStatus, @Body('note') note?: string) {
+    return this.orders.transition(id, status, note);
   }
 }

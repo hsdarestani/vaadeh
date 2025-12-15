@@ -9,6 +9,7 @@ import { EventLogModule } from '../event-log/event-log.module';
 @Module({
   imports: [PrismaModule, OrdersModule, NotificationsModule, EventLogModule],
   controllers: [PaymentsController],
-  providers: [PaymentsService]
+  providers: [PaymentsService],
+  exports: [PaymentsService]
 })
 export class PaymentsModule {}

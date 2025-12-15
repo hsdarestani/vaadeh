@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   IsDateString,
   IsEnum,
+  IsBoolean,
   IsNumber,
   IsOptional,
   IsString,
@@ -75,4 +76,8 @@ export class CreateOrderDto {
   @ValidateNested()
   @Type(() => LocationDto)
   location?: LocationDto;
+
+  @IsOptional()
+  @IsBoolean()
+  payAtDelivery?: boolean;
 }
