@@ -22,6 +22,22 @@ This project is intentionally built to be:
 
 ---
 
+## 🔐 Environment
+
+The API refuses to boot if critical configuration is missing. Populate the following variables (see `.env.example`):
+
+- `DATABASE_URL` – PostgreSQL connection string
+- `JWT_SECRET` – symmetric signing key for access/refresh tokens
+- `REDIS_URL` – Redis connection for OTPs and queues
+- `TELEGRAM_CUSTOMER_BOT_TOKEN` / `TELEGRAM_VENDOR_BOT_TOKEN`
+- `ZIBAL_MERCHANT`, `ZIBAL_CALLBACK_URL` – payment gateway credentials
+- `MELIPAYAMAK_USERNAME`, `MELIPAYAMAK_PASSWORD`, `MELIPAYAMAK_FROM` – SMS provider
+- Delivery knobs: `INTERNAL_DELIVERY_FEE`, `SNAPP_COD_MAX_KM`
+
+Keep `.env` out of version control; set the same values in your deployment platform.
+
+---
+
 ## 🚀 Core Features
 
 ### Customer Experience

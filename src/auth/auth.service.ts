@@ -1,9 +1,10 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
+import { EventActorType, UserRole } from '@prisma/client';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { OtpService } from './otp.service';
 import { NotificationService } from '../notifications/notification.service';
+import { EventLogService } from '../event-log/event-log.service';
 
 interface TokenBundle {
   accessToken: string;
@@ -16,7 +17,8 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly otp: OtpService,
-    private readonly notifications: NotificationService
+    private readonly notifications: NotificationService,
+    private readonly events: EventLogService
   ) {}
 
   async requestOtp(mobile: string) {
@@ -25,8 +27,13 @@ export class AuthService {
       throw new UnauthorizedException('اکانت شما فعال نیست');
     }
 
-    const code = this.otp.generateCode(mobile);
+    const code = await this.otp.generateCode(mobile);
     await this.notifications.sendSms(mobile, `کد ورود شما: ${code}`);
+    await this.events.logEvent('LOGIN_OTP_SENT', {
+      userId: user.id,
+      actorType: EventActorType.USER,
+      metadata: { mobile }
+    });
     return { mobile, codeSent: true };
   }
 
@@ -38,7 +45,7 @@ export class AuthService {
   }
 
   async verifyOtp(mobile: string, code: string) {
-    const isValid = this.otp.verifyCode(mobile, code);
+    const isValid = await this.otp.verifyCode(mobile, code);
     if (!isValid) {
       throw new UnauthorizedException('Invalid OTP');
     }
@@ -49,6 +56,12 @@ export class AuthService {
     }
 
     await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+
+    await this.events.logEvent('LOGIN_OTP_VERIFIED', {
+      userId: user.id,
+      actorType: EventActorType.USER,
+      metadata: { mobile }
+    });
 
     const tokens = this.signTokens(user.id, user.mobile, user.role ?? UserRole.CUSTOMER);
     return { user: { ...user, lastLoginAt: new Date() }, ...tokens };

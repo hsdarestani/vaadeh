@@ -273,6 +273,8 @@ model NotificationLog {
   eventName String?
   status    NotificationStatus   @default(PENDING)
   attempts  Int                  @default(0)
+  providerMessageId String?
+  providerStatus    String?
   lastError String?
 
   order   Order? @relation(fields: [orderId], references: [id], onDelete: Cascade)

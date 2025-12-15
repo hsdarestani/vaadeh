@@ -13,11 +13,6 @@ interface CartItem {
   qty: number;
 }
 
-interface CartItem {
-  menuVariantId: string;
-  qty: number;
-}
-
 @Injectable()
 export class OrdersService {
   constructor(
@@ -84,10 +79,15 @@ export class OrdersService {
     const totalPrice = subtotal + matching.deliveryFee;
 
     const initialStatus = OrderStatus.PLACED;
-    const initialPaymentStatus =
-      dto.payAtDelivery || matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
-        ? PaymentStatus.NONE
-        : PaymentStatus.PENDING;
+    const isPostpaidDelivery = dto.payAtDelivery || matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE;
+    const initialPaymentStatus = isPostpaidDelivery ? PaymentStatus.NONE : PaymentStatus.PENDING;
+    const initialNote =
+      matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
+        ? 'برچسب اسنپ (پس‌کرایه) به دلیل خارج از محدوده'
+        : 'در محدوده ارسال داخلی';
+    const paymentNote = isPostpaidDelivery
+      ? 'پرداخت پیک/سفارش در مقصد توسط مشتری (تعهد پس‌کرایه)'
+      : 'پرداخت آنلاین مورد انتظار';
 
     const order = await this.prisma.$transaction(async (tx) => {
       const created = await tx.order.create({
@@ -128,10 +128,7 @@ export class OrdersService {
           history: {
             create: {
               status: initialStatus,
-              note:
-                matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
-                  ? 'برچسب اسنپ (پس‌کرایه) به دلیل خارج از محدوده'
-                  : 'در محدوده ارسال داخلی'
+              note: `${initialNote} | ${paymentNote}`
             }
           }
         },

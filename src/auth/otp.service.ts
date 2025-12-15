@@ -1,62 +1,69 @@
 import { Injectable, TooManyRequestsException } from '@nestjs/common';
 import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'crypto';
+import { RedisService } from '../redis/redis.service';
 
 interface OtpEntry {
-  hash: Buffer;
-  salt: Buffer;
-  expiresAt: number;
+  hash: string;
+  salt: string;
   attempts: number;
   lockedUntil?: number;
 }
 
 @Injectable()
 export class OtpService {
-  private readonly codes = new Map<string, OtpEntry>();
-  private readonly attempts = new Map<string, number[]>();
   private ttlMs = 5 * 60 * 1000;
   private windowMs = 10 * 60 * 1000;
   private maxAttempts = Number(process.env.OTP_RATE_LIMIT_PER_WINDOW ?? 5);
   private maxVerifyAttempts = 5;
   private lockoutMs = 10 * 60 * 1000;
 
-  generateCode(mobile: string): string {
-    this.enforceRateLimit(mobile);
+  constructor(private readonly redis: RedisService) {}
+
+  private codeKey(mobile: string) {
+    return `otp:code:${mobile}`;
+  }
+
+  private requestKey(mobile: string) {
+    return `otp:req:${mobile}`;
+  }
+
+  async generateCode(mobile: string): Promise<string> {
+    await this.enforceRateLimit(mobile);
     const code = randomInt(1000, 9999).toString();
     const salt = randomBytes(16);
     const hash = scryptSync(code, salt, 32);
-    this.codes.set(mobile, { hash, salt, expiresAt: Date.now() + this.ttlMs, attempts: 0 });
-    const now = Date.now();
-    const attempts = this.attempts.get(mobile) ?? [];
-    attempts.push(now);
-    this.attempts.set(mobile, attempts);
+    const entry: OtpEntry = { hash: hash.toString('hex'), salt: salt.toString('hex'), attempts: 0 };
+
+    await this.redis.getClient().set(this.codeKey(mobile), JSON.stringify(entry), 'PX', this.ttlMs);
     return code;
   }
 
-  private enforceRateLimit(mobile: string) {
-    const now = Date.now();
-    const windowStart = now - this.windowMs;
-    const attempts = (this.attempts.get(mobile) ?? []).filter((ts) => ts >= windowStart);
-
-    if (attempts.length >= this.maxAttempts) {
-      throw new TooManyRequestsException('OTP requests are temporarily limited. Please wait a bit.');
+  private async enforceRateLimit(mobile: string) {
+    const key = this.requestKey(mobile);
+    const count = await this.redis.getClient().incr(key);
+    if (count === 1) {
+      await this.redis.getClient().pexpire(key, this.windowMs);
     }
 
-    this.attempts.set(mobile, attempts);
+    if (count > this.maxAttempts) {
+      throw new TooManyRequestsException('OTP requests are temporarily limited. Please wait a bit.');
+    }
   }
 
-  verifyCode(mobile: string, code: string): boolean {
-    const entry = this.codes.get(mobile);
-    if (!entry) return false;
-    if (entry.lockedUntil && entry.lockedUntil > Date.now()) return false;
-    if (Date.now() > entry.expiresAt) {
-      this.codes.delete(mobile);
+  async verifyCode(mobile: string, code: string): Promise<boolean> {
+    const raw = await this.redis.getClient().get(this.codeKey(mobile));
+    if (!raw) return false;
+
+    const entry = JSON.parse(raw) as OtpEntry;
+    if (entry.lockedUntil && entry.lockedUntil > Date.now()) {
       return false;
     }
 
-    const computed = scryptSync(code, entry.salt, entry.hash.length);
-    const valid = timingSafeEqual(computed, entry.hash);
+    const computed = scryptSync(code, Buffer.from(entry.salt, 'hex'), Buffer.from(entry.hash, 'hex').length);
+    const valid = timingSafeEqual(computed, Buffer.from(entry.hash, 'hex'));
+
     if (valid) {
-      this.codes.delete(mobile);
+      await this.redis.getClient().del(this.codeKey(mobile));
       return true;
     }
 
@@ -64,7 +71,11 @@ export class OtpService {
     if (entry.attempts >= this.maxVerifyAttempts) {
       entry.lockedUntil = Date.now() + this.lockoutMs;
     }
-    this.codes.set(mobile, entry);
+
+    await this.redis
+      .getClient()
+      .set(this.codeKey(mobile), JSON.stringify(entry), 'PX', Math.max(this.lockoutMs, this.ttlMs));
+
     return false;
   }
 }
