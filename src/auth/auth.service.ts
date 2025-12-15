@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { OtpService } from './otp.service';
 import { NotificationService } from '../notifications/notification.service';
 import { EventLogService } from '../event-log/event-log.service';
+import { RateLimitService } from '../middleware/rate-limit.service';
 
 interface TokenBundle {
   accessToken: string;
@@ -18,17 +19,22 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly otp: OtpService,
     private readonly notifications: NotificationService,
-    private readonly events: EventLogService
+    private readonly events: EventLogService,
+    private readonly rateLimit: RateLimitService
   ) {}
 
   async requestOtp(mobile: string) {
+    this.rateLimit.assertWithinLimit(`otp:${mobile}`, 5, 10 * 60 * 1000);
     const user = await this.prisma.user.findUnique({ where: { mobile } });
     if (!user || user.isBlocked || !user.isActive) {
       throw new UnauthorizedException('اکانت شما فعال نیست');
     }
 
     const code = await this.otp.generateCode(mobile);
-    await this.notifications.sendSms(mobile, `کد ورود شما: ${code}`);
+    await this.notifications.sendSms(mobile, `کد ورود شما: ${code}`, {
+      eventName: 'login_otp',
+      userId: user.id
+    });
     await this.events.logEvent('LOGIN_OTP_SENT', {
       userId: user.id,
       actorType: EventActorType.USER,

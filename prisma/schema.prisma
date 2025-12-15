@@ -101,6 +101,7 @@ model Order {
   deliveryFee     Decimal             @db.Decimal(10, 2) @default(0)
   totalPrice      Decimal             @db.Decimal(10, 2)
   adminNote       String?
+  courierReference String?
   customerNote    String?
   scheduledAt     DateTime?
   locationLat     Float

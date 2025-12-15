@@ -60,7 +60,11 @@ export class NotificationOrchestrator {
         userId: order.userId
       });
     }
-    await this.notifications.sendSms(order.user.mobile, customerMessage);
+    await this.notifications.sendSms(order.user.mobile, customerMessage, {
+      eventName: 'onOrderCreated',
+      orderId: order.id,
+      userId: order.userId
+    });
 
     if (order.vendor.telegramChatId) {
       const settlementCopy =
@@ -79,7 +83,8 @@ export class NotificationOrchestrator {
     if (order.vendor.contactPhone) {
       await this.notifications.sendSms(
         order.vendor.contactPhone,
-        `سفارش جدید #${order.id.slice(-6)} - مشتری ${order.user.mobile} - مبلغ ${order.totalPrice.toString()}`
+        `سفارش جدید #${order.id.slice(-6)} - مشتری ${order.user.mobile} - مبلغ ${order.totalPrice.toString()}`,
+        { eventName: 'onOrderCreated', orderId: order.id, vendorId: order.vendorId }
       );
     }
 
@@ -89,6 +94,13 @@ export class NotificationOrchestrator {
         `سفارش جدید #${order.id.slice(-6)} برای ${order.vendor.name} ثبت شد.`,
         { eventName: 'onOrderCreated_admin', orderId: order.id }
       );
+      if (order.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE) {
+        await this.notifications.sendTelegram(
+          this.adminChatId,
+          `سفارش #${order.id.slice(-6)} خارج از محدوده ثبت شد و با برچسب اسنپ ارسال می‌شود.`,
+          { eventName: 'onOrderCreated_admin_out_of_zone', orderId: order.id }
+        );
+      }
     }
   }
 
@@ -104,7 +116,11 @@ export class NotificationOrchestrator {
         userId: order.userId
       });
     }
-    await this.notifications.sendSms(order.user.mobile, message);
+    await this.notifications.sendSms(order.user.mobile, message, {
+      eventName: 'onPaymentSuccess',
+      orderId: order.id,
+      userId: order.userId
+    });
 
     if (order.vendor.telegramChatId) {
       const vendorMessage = `پرداخت سفارش #${order.id.slice(-6)} تایید شد و آماده پذیرش است.`;
@@ -119,7 +135,8 @@ export class NotificationOrchestrator {
     if (order.vendor.contactPhone) {
       await this.notifications.sendSms(
         order.vendor.contactPhone,
-        `پرداخت سفارش #${order.id.slice(-6)} تایید شد و آماده پردازش است.`
+        `پرداخت سفارش #${order.id.slice(-6)} تایید شد و آماده پردازش است.`,
+        { eventName: 'onPaymentSuccess', orderId: order.id, vendorId: order.vendorId }
       );
     }
 
@@ -144,7 +161,11 @@ export class NotificationOrchestrator {
         userId: order.userId
       });
     }
-    await this.notifications.sendSms(order.user.mobile, customerMessage);
+    await this.notifications.sendSms(order.user.mobile, customerMessage, {
+      eventName: 'onPaymentFailed',
+      orderId: order.id,
+      userId: order.userId
+    });
 
     if (this.adminChatId) {
       await this.notifications.sendTelegram(this.adminChatId, `پرداخت سفارش #${order.id.slice(-6)} ناموفق بود.`, {
@@ -166,15 +187,57 @@ export class NotificationOrchestrator {
         userId: order.userId
       });
     }
-    await this.notifications.sendSms(order.user.mobile, message);
+    await this.notifications.sendSms(order.user.mobile, message, {
+      eventName: 'onVendorAccepted',
+      orderId: order.id,
+      userId: order.userId
+    });
+  }
+
+  async onVendorRejected(orderId: string) {
+    const order = await this.getOrderContext(orderId);
+    if (!order) return;
+
+    const message = `متاسفانه سفارش ${order.id.slice(-6)} توسط ${order.vendor.name} رد شد. وجه در صورت پرداخت، بازپرداخت می‌شود.`;
+    if (order.user.telegramUserId) {
+      await this.notifications.sendTelegram(order.user.telegramUserId, message, {
+        eventName: 'onVendorRejected',
+        orderId: order.id,
+        userId: order.userId
+      });
+    }
+    await this.notifications.sendSms(order.user.mobile, message, {
+      eventName: 'onVendorRejected',
+      orderId: order.id,
+      userId: order.userId
+    });
+
+    if (this.adminChatId) {
+      await this.notifications.sendTelegram(
+        this.adminChatId,
+        `سفارش #${order.id.slice(-6)} توسط ${order.vendor.name} رد شد.`,
+        { eventName: 'onVendorRejected_admin', orderId: order.id, vendorId: order.vendorId }
+      );
+    }
   }
 
   async onDelivery(orderId: string, status: OrderStatus) {
     const order = await this.getOrderContext(orderId);
     if (!order) return;
+    const statusCopy: Record<OrderStatus, string> = {
+      [OrderStatus.PLACED]: 'سفارش شما ثبت شد.',
+      [OrderStatus.VENDOR_ACCEPTED]: 'سفارش توسط وندور تایید شد.',
+      [OrderStatus.VENDOR_REJECTED]: 'سفارش توسط وندور رد شد.',
+      [OrderStatus.PREPARING]: 'آشپزخانه در حال آماده‌سازی سفارش شماست.',
+      [OrderStatus.READY]: 'سفارش آماده تحویل است.',
+      [OrderStatus.COURIER_ASSIGNED]: 'پیک برای سفارش شما تخصیص یافت.',
+      [OrderStatus.OUT_FOR_DELIVERY]: 'سفارش در مسیر ارسال است.',
+      [OrderStatus.DELIVERED]: 'سفارش تحویل داده شد. نوش جان!',
+      [OrderStatus.CANCELLED]: 'سفارش لغو شد.',
+      [OrderStatus.DRAFT]: 'پیش‌نویس سفارش به‌روز شد.'
+    };
 
-    const finalMessage =
-      status === OrderStatus.DELIVERED ? 'سفارش تحویل داده شد. نوش جان!' : 'وضعیت سفارش به‌روزرسانی شد.';
+    const finalMessage = statusCopy[status] ?? 'وضعیت سفارش به‌روزرسانی شد.';
 
     if (order.user.telegramUserId) {
       await this.notifications.sendTelegram(order.user.telegramUserId, finalMessage, {
@@ -183,6 +246,10 @@ export class NotificationOrchestrator {
         userId: order.userId
       });
     }
-    await this.notifications.sendSms(order.user.mobile, finalMessage);
+    await this.notifications.sendSms(order.user.mobile, finalMessage, {
+      eventName: 'onDelivery',
+      orderId: order.id,
+      userId: order.userId
+    });
   }
 }

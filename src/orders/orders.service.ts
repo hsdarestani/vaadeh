@@ -30,6 +30,11 @@ export class OrdersService {
       throw new UnauthorizedException('اکانت شما فعال نیست');
     }
 
+    const addressCount = await this.prisma.address.count({ where: { userId } });
+    if (!addressCount && !dto.addressPayload) {
+      throw new BadRequestException('آدرس برای ثبت سفارش الزامی است');
+    }
+
     if (!dto.items?.length) {
       throw new BadRequestException('Cart items required');
     }
@@ -113,8 +118,7 @@ export class OrdersService {
           locationLng,
           status: initialStatus,
           paymentStatus: initialPaymentStatus,
-          deliverySettlementType:
-            matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE ? 'POSTPAID' : undefined,
+          deliverySettlementType: isPostpaidDelivery ? 'POSTPAID' : undefined,
           items: {
             create: dto.items.map((item) => {
               const variant = variants.find((v) => v.id === item.menuVariantId) as (typeof variants)[0];
@@ -138,13 +142,22 @@ export class OrdersService {
     });
 
     await this.notifications.onOrderCreated(order.id);
-    await this.eventLog.logEvent('order_created', {
+    await this.eventLog.logEvent('ORDER_PLACED', {
       orderId: order.id,
       userId,
       vendorId: vendor.id,
       actorType: EventActorType.USER,
       metadata: { deliveryType: matching.deliveryType, deliveryFee: matching.deliveryFee }
     });
+    if (matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE) {
+      await this.eventLog.logEvent('OUT_OF_ZONE_SELECTED', {
+        orderId: order.id,
+        userId,
+        vendorId: vendor.id,
+        actorType: EventActorType.USER,
+        metadata: { deliveryType: matching.deliveryType }
+      });
+    }
     await this.productEvents.track('checkout_completed', {
       actorType: EventActorType.USER,
       actorId: userId,
@@ -193,23 +206,32 @@ export class OrdersService {
       }
     });
 
-    await this.eventLog.logEvent('order_status_change', {
-      orderId,
-      userId: order.userId,
-      vendorId: order.vendorId,
-      actorType: EventActorType.SYSTEM,
-      metadata: { from: order.status, to: next }
-    });
+      await this.eventLog.logEvent('ORDER_STATUS_CHANGE', {
+        orderId,
+        userId: order.userId,
+        vendorId: order.vendorId,
+        actorType: EventActorType.SYSTEM,
+        metadata: { from: order.status, to: next }
+      });
 
     if (next === OrderStatus.VENDOR_ACCEPTED) {
-      await this.notifications.onVendorAccepted(orderId);
-      await this.eventLog.logEvent('vendor_accepted', {
-        orderId,
-        vendorId: order.vendorId,
-        userId: order.userId,
-        actorType: EventActorType.VENDOR
-      });
-    }
+        await this.notifications.onVendorAccepted(orderId);
+        await this.eventLog.logEvent('VENDOR_ACCEPTED', {
+          orderId,
+          vendorId: order.vendorId,
+          userId: order.userId,
+          actorType: EventActorType.VENDOR
+        });
+      }
+    if (next === OrderStatus.VENDOR_REJECTED) {
+        await this.notifications.onVendorRejected(orderId);
+        await this.eventLog.logEvent('VENDOR_REJECTED', {
+          orderId,
+          vendorId: order.vendorId,
+          userId: order.userId,
+          actorType: EventActorType.VENDOR
+        });
+      }
     if (
       [OrderStatus.READY, OrderStatus.COURIER_ASSIGNED, OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED].includes(
         next
@@ -218,16 +240,45 @@ export class OrdersService {
       await this.notifications.onDelivery(orderId, next);
     }
 
-    if (next === OrderStatus.DELIVERED) {
-      await this.eventLog.logEvent('delivery_completed', {
-        orderId,
-        vendorId: order.vendorId,
-        userId: order.userId,
-        actorType: EventActorType.SYSTEM
-      });
-    }
+      if (next === OrderStatus.DELIVERED) {
+        await this.eventLog.logEvent('DELIVERED', {
+          orderId,
+          vendorId: order.vendorId,
+          userId: order.userId,
+          actorType: EventActorType.SYSTEM
+        });
+      }
 
     return updated;
+  }
+
+  async listForUser(userId: string) {
+    return this.prisma.order.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        vendor: true,
+        items: { include: { menuVariant: { include: { menuItem: true } } } },
+        history: { orderBy: { changedAt: 'asc' } }
+      }
+    });
+  }
+
+  async getForUser(orderId: string, userId: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, userId },
+      include: {
+        vendor: true,
+        items: { include: { menuVariant: { include: { menuItem: true } } } },
+        history: { orderBy: { changedAt: 'asc' } }
+      }
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    return order;
   }
 
   async getTelegramUser(telegramUserId: number) {

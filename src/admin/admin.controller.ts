@@ -11,6 +11,7 @@ import { UpdateMenuItemDto } from './dto/update-menu-item.dto';
 import { CreateMenuVariantDto } from './dto/create-menu-variant.dto';
 import { UpdateMenuVariantDto } from './dto/update-menu-variant.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -71,6 +72,11 @@ export class AdminController {
   @Get('users/:id/orders')
   getUserOrders(@Param('id') id: string) {
     return this.admin.getUserOrders(id);
+  }
+
+  @Patch('users/:id')
+  updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto) {
+    return this.admin.updateUser(id, dto);
   }
 
   @Get('kpis')

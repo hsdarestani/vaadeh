@@ -20,4 +20,17 @@ export class UpdateOrderDto {
   @IsOptional()
   @IsString()
   adminNote?: string;
+
+  @IsOptional()
+  @IsString()
+  statusNote?: string;
+
+  @IsOptional()
+  @IsString()
+  courierReference?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  deliveryFeeFinal?: number;
 }

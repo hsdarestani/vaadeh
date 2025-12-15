@@ -12,6 +12,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { NotificationOrchestrator } from '../notifications/notification.orchestrator';
 import { EventLogService } from '../event-log/event-log.service';
 import { ProductEventService } from '../event-log/product-event.service';
+import { RateLimitService } from '../middleware/rate-limit.service';
 
 interface ZibalRequestResponse {
   result: number;
@@ -36,7 +37,8 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationOrchestrator,
     private readonly eventLog: EventLogService,
-    private readonly productEvents: ProductEventService
+    private readonly productEvents: ProductEventService,
+    private readonly rateLimit: RateLimitService
   ) {
     this.merchantId = process.env.ZIBAL_MERCHANT ?? process.env.ZIBAL_MERCHANT_ID ?? '';
     if (!this.merchantId) {
@@ -72,6 +74,7 @@ export class PaymentsService {
   }
 
   async requestZibal(orderId: string, userId: string) {
+    this.rateLimit.assertWithinLimit(`payment-request:${userId}`, 5, 10 * 60 * 1000);
     const order = await this.prisma.order.findUnique({ where: { id: orderId }, include: { payment: true } });
     if (!order || order.userId !== userId) {
       throw new NotFoundException('Order not found');
@@ -101,7 +104,7 @@ export class PaymentsService {
         trackId
       });
       responseData = data;
-      if (data.result !== 100) {
+      if (data.result !== 100 || !data.payLink || !data.trackId) {
         throw new BadRequestException(data.message || 'Payment gateway rejected request');
       }
     } catch (err) {
@@ -130,6 +133,8 @@ export class PaymentsService {
       throw new BadRequestException(message);
     }
 
+    const effectiveTrackId = responseData?.trackId ?? trackId;
+
     const payment = await this.prisma.$transaction(async (tx) => {
       const persisted = await tx.payment.upsert({
         where: { orderId },
@@ -137,12 +142,12 @@ export class PaymentsService {
           orderId,
           userId,
           provider: PaymentProvider.ZIBAL,
-          trackId,
+          trackId: effectiveTrackId,
           amount,
           status: PaymentStatus.PENDING
         },
         update: {
-          trackId,
+          trackId: effectiveTrackId,
           amount,
           status: PaymentStatus.PENDING
         }
@@ -152,7 +157,7 @@ export class PaymentsService {
         data: {
           paymentId: persisted.id,
           requestId: responseData?.trackId ?? trackId,
-          trackId,
+          trackId: effectiveTrackId,
           amount,
           status: responseData?.result === 100 ? PaymentStatus.PENDING : PaymentStatus.FAILED,
           rawResponse: responseData ?? {},
@@ -163,30 +168,29 @@ export class PaymentsService {
       await tx.order.update({ where: { id: orderId }, data: { paymentStatus: PaymentStatus.PENDING } });
 
       return persisted;
-    });
+      });
 
-    await this.productEvents.track('payment_requested', {
-      actorType: EventActorType.USER,
-      actorId: userId,
-      orderId,
-      metadata: { provider: 'ZIBAL', trackId }
-    });
+      await this.productEvents.track('payment_requested', {
+        actorType: EventActorType.USER,
+        actorId: userId,
+        orderId,
+        metadata: { provider: 'ZIBAL', trackId: effectiveTrackId }
+      });
+      await this.eventLog.logEvent('PAYMENT_REQUESTED', {
+        orderId,
+        userId,
+        actorType: EventActorType.USER,
+        metadata: { provider: 'ZIBAL', trackId: effectiveTrackId, amount: Number(amount) }
+      });
 
-    return { payment, payLink: responseData?.payLink ?? `https://gateway.zibal.ir/start/${trackId}` };
-  }
+      return { payment, payLink: responseData?.payLink };
+    }
 
   async verifyZibal(trackId: string, rawPayload?: any) {
+    this.rateLimit.assertWithinLimit(`payment-verify:${trackId}`, 10, 10 * 60 * 1000);
     const payment = await this.prisma.payment.findFirst({ where: { trackId }, include: { order: true } });
     if (!payment) {
       throw new NotFoundException('Payment not found');
-    }
-
-    if (payment.status === PaymentStatus.PAID) {
-      return { payment, orderStatus: payment.order?.status, message: 'already verified' };
-    }
-
-    if (payment.status === PaymentStatus.FAILED) {
-      return { payment, orderStatus: payment.order?.status, message: 'payment failed' };
     }
 
     let verifyData: ZibalVerifyResponse | null = null;
@@ -202,17 +206,29 @@ export class PaymentsService {
     }
 
     const providerOk = verifyData?.result === 100;
-    const amountMatches = verifyData?.amount === undefined || Number(verifyData.amount) === Number(payment.amount);
+    const amountMatches = verifyData?.amount !== undefined && Number(verifyData.amount) === Number(payment.amount);
     const orderMatches = rawPayload?.orderId ? rawPayload.orderId === payment.orderId : true;
     const success = providerOk && amountMatches && orderMatches;
     const verifiedAt = success ? new Date() : undefined;
 
-    await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
+      const latest = await tx.payment.findUnique({ where: { id: payment.id }, include: { order: true } });
+      if (!latest) {
+        throw new NotFoundException('Payment not found');
+      }
+
+      if (latest.status === PaymentStatus.PAID) {
+        return { payment: latest, alreadyFinal: true };
+      }
+      if (latest.status === PaymentStatus.FAILED && !success) {
+        return { payment: latest, alreadyFinal: true };
+      }
+
       const persisted = await tx.payment.update({
         where: { id: payment.id },
         data: {
           status: success ? PaymentStatus.PAID : PaymentStatus.FAILED,
-          verifiedAt: verifiedAt ?? payment.verifiedAt
+          verifiedAt: verifiedAt ?? latest.verifiedAt
         }
       });
 
@@ -233,30 +249,29 @@ export class PaymentsService {
         data: { paymentStatus: success ? PaymentStatus.PAID : PaymentStatus.FAILED }
       });
 
-      if (success && payment.order) {
+      if (success && latest.order) {
         await tx.order.update({
           where: { id: payment.orderId },
           data: {
-            status: payment.order.status === OrderStatus.PLACED ? OrderStatus.PLACED : payment.order.status,
+            status: latest.order.status === OrderStatus.PLACED ? OrderStatus.PLACED : latest.order.status,
             history:
-              payment.order.status === OrderStatus.PLACED
+              latest.order.status === OrderStatus.PLACED
                 ? { create: { status: OrderStatus.PLACED, note: 'پرداخت موفق تایید شد' } }
                 : undefined
           }
         });
       }
 
-      return persisted;
+      const refreshed = await tx.payment.findUnique({ where: { id: payment.id }, include: { order: true } });
+      return { payment: refreshed!, alreadyFinal: false };
     });
 
-    const refreshed = await this.prisma.payment.findUnique({ where: { id: payment.id }, include: { order: true } });
-
-    if (success) {
-      await this.notifications.onPaymentSuccess(payment.orderId);
-      await this.eventLog.logEvent('payment_verified', {
-        orderId: payment.orderId,
-        userId: payment.userId ?? payment.order?.userId,
-        vendorId: payment.order?.vendorId,
+      if (success && !result.alreadyFinal) {
+        await this.notifications.onPaymentSuccess(payment.orderId);
+        await this.eventLog.logEvent('PAYMENT_VERIFIED', {
+          orderId: payment.orderId,
+          userId: payment.userId ?? payment.order?.userId,
+          vendorId: payment.order?.vendorId,
         actorType: EventActorType.USER,
         metadata: { trackId }
       });
@@ -266,7 +281,7 @@ export class PaymentsService {
         orderId: payment.orderId,
         metadata: { provider: 'ZIBAL', trackId }
       });
-    } else {
+    } else if (!success && !result.alreadyFinal) {
       await this.notifications.onPaymentFailed(payment.orderId);
       await this.productEvents.track('payment_failed', {
         actorType: EventActorType.USER,
@@ -276,7 +291,7 @@ export class PaymentsService {
       });
     }
 
-    return { payment: refreshed, orderStatus: refreshed?.order.status, success };
+    return { payment: result.payment, orderStatus: result.payment.order?.status, success };
   }
 
   async handleZibalCallback(payload: Record<string, any>) {
@@ -285,13 +300,15 @@ export class PaymentsService {
       throw new BadRequestException('trackId is required');
     }
 
+    this.rateLimit.assertWithinLimit(`payment-callback:${trackId}`, 20, 60 * 60 * 1000);
+
     const payment = await this.prisma.payment.findFirst({ where: { trackId }, include: { order: true } });
     if (!payment) {
       throw new NotFoundException('Payment not found');
     }
 
-    const amountMatches = payload?.amount ? Number(payload.amount) === Number(payment.amount) : true;
-    const orderMatches = payload?.orderId ? payload.orderId === payment.orderId : true;
+    const amountMatches = payload?.amount !== undefined ? Number(payload.amount) === Number(payment.amount) : false;
+    const orderMatches = payload?.orderId ? payload.orderId === payment.orderId : false;
 
     await this.prisma.paymentAttempt.create({
       data: {
@@ -309,15 +326,18 @@ export class PaymentsService {
       return { paymentStatus: payment.status, message: 'already verified' };
     }
 
-    if (!orderMatches) {
-      await this.prisma.payment.update({ where: { id: payment.id }, data: { status: PaymentStatus.FAILED } });
-      await this.prisma.order.update({ where: { id: payment.orderId }, data: { paymentStatus: PaymentStatus.FAILED } });
+    if (!orderMatches || !amountMatches) {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.payment.update({ where: { id: payment.id }, data: { status: PaymentStatus.FAILED } });
+        if (payment.orderId) {
+          await tx.order.update({ where: { id: payment.orderId }, data: { paymentStatus: PaymentStatus.FAILED } });
+        }
+      });
       await this.notifications.onPaymentFailed(payment.orderId);
-      return { paymentStatus: PaymentStatus.FAILED, message: 'orderId mismatch' };
+      return { paymentStatus: PaymentStatus.FAILED, message: 'payload mismatch' };
     }
 
-    const successFlag =
-      (payload?.success === '1' || payload?.success === 1 || payload?.result === 100) && amountMatches && orderMatches;
+    const successFlag = (payload?.success === '1' || payload?.success === 1 || payload?.result === 100) && amountMatches;
     if (!successFlag) {
       await this.prisma.$transaction(async (tx) => {
         await tx.payment.update({ where: { id: payment.id }, data: { status: PaymentStatus.FAILED } });

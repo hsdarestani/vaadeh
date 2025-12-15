@@ -9,6 +9,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
 import { OtpService } from './otp.service';
+import { RateLimitService } from '../middleware/rate-limit.service';
 
 @Module({
   imports: [
@@ -23,7 +24,7 @@ import { OtpService } from './otp.service';
     EventLogModule
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, OtpService],
+  providers: [AuthService, JwtStrategy, OtpService, RateLimitService],
   exports: [AuthService, JwtModule]
 })
 export class AuthModule {}

@@ -41,9 +41,11 @@ export type KPI = {
   totalSales: number;
   cancelRate: number;
   paymentConversion: number;
+  acceptanceRate: number;
   averageSecondsToAccept: number;
   averageSecondsToComplete: number;
-  deliveryMix: { inRange: number; outOfRange: number };
+  deliveryMix: { inRange: number; outOfRange: number; outOfZonePercent: number };
+  ordersPerDay: Record<string, number>;
 };
 
 export type Payment = {
@@ -63,6 +65,14 @@ export type NotificationLog = {
   createdAt: string;
   eventName?: string | null;
   lastError?: string | null;
+};
+
+export type AdminUser = {
+  id: string;
+  mobile: string;
+  isBlocked: boolean;
+  isActive: boolean;
+  orders: Order[];
 };
 
 export type EventLog = {
@@ -111,13 +121,16 @@ export default function Dashboard() {
   const [mobile, setMobile] = useState('');
   const [otp, setOtp] = useState('');
   const [orders, setOrders] = useState<Order[]>([]);
+  const [users, setUsers] = useState<AdminUser[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [kpis, setKpis] = useState<KPI | null>(null);
-  const [statusDrafts, setStatusDrafts] = useState<Record<string, string>>({});
+  const [orderDrafts, setOrderDrafts] = useState<Record<string, any>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [notifications, setNotifications] = useState<NotificationLog[]>([]);
   const [events, setEvents] = useState<EventLog[]>([]);
+  const [orderStatusFilter, setOrderStatusFilter] = useState<string>('');
+  const [orderVendorFilter, setOrderVendorFilter] = useState<string>('');
   const [vendorDraft, setVendorDraft] = useState({
     name: '',
     lat: '',
@@ -131,13 +144,14 @@ export default function Dashboard() {
   const refreshAll = useCallback(async () => {
     if (!token) return;
     try {
-      const [ordersResp, vendorsResp, kpiResp, paymentResp, notifResp, eventsResp] = await Promise.all([
+      const [ordersResp, vendorsResp, kpiResp, paymentResp, notifResp, eventsResp, usersResp] = await Promise.all([
         apiFetch<Order[]>('/admin/orders', token),
         apiFetch<Vendor[]>('/admin/vendors', token),
         apiFetch<KPI>('/admin/kpis', token),
         apiFetch<Payment[]>('/admin/payments', token),
         apiFetch<NotificationLog[]>('/admin/notifications', token),
-        apiFetch<EventLog[]>('/admin/events', token)
+        apiFetch<EventLog[]>('/admin/events', token),
+        apiFetch<AdminUser[]>('/admin/users', token)
       ]);
       setOrders(ordersResp);
       setVendors(vendorsResp);
@@ -145,6 +159,7 @@ export default function Dashboard() {
       setPayments(paymentResp);
       setNotifications(notifResp);
       setEvents(eventsResp);
+      setUsers(usersResp);
     } catch (err: any) {
       setMessage(err.message ?? 'Load failed');
     }
@@ -184,10 +199,17 @@ export default function Dashboard() {
 
   const updateOrder = async (orderId: string) => {
     if (!token) return;
-    const nextStatus = statusDrafts[orderId];
+    const draft = orderDrafts[orderId] ?? {};
     await apiFetch(`/admin/orders/${orderId}`, token, {
       method: 'PATCH',
-      body: JSON.stringify({ status: nextStatus })
+      body: JSON.stringify({
+        status: draft.status,
+        statusNote: draft.statusNote,
+        deliveryFee: draft.deliveryFee ? Number(draft.deliveryFee) : undefined,
+        deliveryFeeFinal: draft.deliveryFeeFinal ? Number(draft.deliveryFeeFinal) : undefined,
+        courierReference: draft.courierReference,
+        adminNote: draft.adminNote
+      })
     });
     await refreshAll();
     setMessage('Order updated');
@@ -209,6 +231,21 @@ export default function Dashboard() {
     await refreshAll();
     setMessage('Vendor created');
   };
+
+  const updateUserFlags = async (userId: string, flags: { isBlocked?: boolean; isActive?: boolean }) => {
+    if (!token) return;
+    await apiFetch(`/admin/users/${userId}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify(flags)
+    });
+    await refreshAll();
+  };
+
+  const filteredOrders = orders.filter((order) => {
+    const matchesStatus = orderStatusFilter ? order.status === orderStatusFilter : true;
+    const matchesVendor = orderVendorFilter ? order.vendor?.id === orderVendorFilter : true;
+    return matchesStatus && matchesVendor;
+  });
 
   if (!loggedIn) {
     return (
@@ -279,12 +316,32 @@ export default function Dashboard() {
             <p className="text-2xl font-bold">{(kpis.paymentConversion * 100).toFixed(1)}%</p>
           </div>
           <div className="card">
+            <p className="text-sm text-slate-500">نرخ پذیرش</p>
+            <p className="text-2xl font-bold">{(kpis.acceptanceRate * 100).toFixed(1)}%</p>
+          </div>
+          <div className="card">
             <p className="text-sm text-slate-500">زمان تا پذیرش</p>
             <p className="text-2xl font-bold">{kpis.averageSecondsToAccept.toFixed(0)} ثانیه</p>
           </div>
           <div className="card">
             <p className="text-sm text-slate-500">زمان تا تکمیل</p>
             <p className="text-2xl font-bold">{kpis.averageSecondsToComplete.toFixed(0)} ثانیه</p>
+          </div>
+          <div className="card">
+            <p className="text-sm text-slate-500">خارج از محدوده</p>
+            <p className="text-2xl font-bold">{(kpis.deliveryMix.outOfZonePercent * 100).toFixed(1)}%</p>
+          </div>
+        </div>
+        <div className="card">
+          <p className="text-sm text-slate-500">۷ روز اخیر</p>
+          <div className="flex flex-wrap gap-2 text-xs text-slate-700">
+            {Object.entries(kpis.ordersPerDay)
+              .sort(([a], [b]) => (a > b ? 1 : -1))
+              .map(([day, count]) => (
+                <span key={day} className="px-2 py-1 rounded bg-slate-100">
+                  {day}: {count}
+                </span>
+              ))}
           </div>
         </div>
       )}
@@ -293,6 +350,33 @@ export default function Dashboard() {
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-semibold">سفارش‌ها</h2>
           <span className="text-sm text-slate-500">به‌روزرسانی خودکار ۱۵ ثانیه‌ای</span>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <select
+            className="border rounded px-2 py-1"
+            value={orderStatusFilter}
+            onChange={(e) => setOrderStatusFilter(e.target.value)}
+          >
+            <option value="">همه وضعیت‌ها</option>
+            {ORDER_STATUSES.map((status) => (
+              <option key={status} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+          <select
+            className="border rounded px-2 py-1"
+            value={orderVendorFilter}
+            onChange={(e) => setOrderVendorFilter(e.target.value)}
+          >
+            <option value="">همه وندورها</option>
+            {vendors.map((vendor) => (
+              <option key={vendor.id} value={vendor.id}>
+                {vendor.name}
+              </option>
+            ))}
+          </select>
+          <span className="text-xs text-slate-500">{filteredOrders.length} نتایج</span>
         </div>
         <div className="overflow-auto">
           <table className="min-w-full text-sm">
@@ -308,7 +392,7 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {orders.map((order) => (
+              {filteredOrders.map((order) => (
                 <tr key={order.id} className="border-t">
                   <td className="py-2 pr-4">{order.id.slice(0, 8)}</td>
                   <td className="py-2 pr-4">{order.user?.mobile}</td>
@@ -322,11 +406,11 @@ export default function Dashboard() {
                     <div className="flex gap-2 items-center">
                       <select
                         className="border rounded px-2 py-1"
-                        value={statusDrafts[order.id] ?? order.status}
+                        value={orderDrafts[order.id]?.status ?? order.status}
                         onChange={(e) =>
-                          setStatusDrafts((prev) => ({
+                          setOrderDrafts((prev) => ({
                             ...prev,
-                            [order.id]: e.target.value
+                            [order.id]: { ...prev[order.id], status: e.target.value }
                           }))
                         }
                       >
@@ -334,6 +418,50 @@ export default function Dashboard() {
                           <option key={status}>{status}</option>
                         ))}
                       </select>
+                      <input
+                        className="border rounded px-2 py-1"
+                        placeholder="یادداشت وضعیت"
+                        value={orderDrafts[order.id]?.statusNote ?? ''}
+                        onChange={(e) =>
+                          setOrderDrafts((prev) => ({
+                            ...prev,
+                            [order.id]: { ...prev[order.id], statusNote: e.target.value }
+                          }))
+                        }
+                      />
+                      <input
+                        className="border rounded px-2 py-1"
+                        placeholder="هزینه ارسال"
+                        value={orderDrafts[order.id]?.deliveryFee ?? ''}
+                        onChange={(e) =>
+                          setOrderDrafts((prev) => ({
+                            ...prev,
+                            [order.id]: { ...prev[order.id], deliveryFee: e.target.value }
+                          }))
+                        }
+                      />
+                      <input
+                        className="border rounded px-2 py-1"
+                        placeholder="هزینه نهایی"
+                        value={orderDrafts[order.id]?.deliveryFeeFinal ?? ''}
+                        onChange={(e) =>
+                          setOrderDrafts((prev) => ({
+                            ...prev,
+                            [order.id]: { ...prev[order.id], deliveryFeeFinal: e.target.value }
+                          }))
+                        }
+                      />
+                      <input
+                        className="border rounded px-2 py-1"
+                        placeholder="کد پیک"
+                        value={orderDrafts[order.id]?.courierReference ?? ''}
+                        onChange={(e) =>
+                          setOrderDrafts((prev) => ({
+                            ...prev,
+                            [order.id]: { ...prev[order.id], courierReference: e.target.value }
+                          }))
+                        }
+                      />
                       <button className="button" onClick={() => updateOrder(order.id)}>
                         ذخیره
                       </button>
@@ -401,6 +529,46 @@ export default function Dashboard() {
           <button className="button col-span-full md:col-span-1" onClick={createVendor} disabled={!vendorDraft.name}>
             ایجاد وندور
           </button>
+        </div>
+      </section>
+
+      <section className="card space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold">کاربران</h2>
+          <span className="text-sm text-slate-500">بلوک / فعال‌سازی</span>
+        </div>
+        <div className="grid md:grid-cols-2 gap-3">
+          {users.map((user) => (
+            <div key={user.id} className="border rounded p-3 space-y-2">
+              <div className="flex justify-between items-center">
+                <div>
+                  <p className="font-semibold">{user.mobile}</p>
+                  <p className="text-xs text-slate-500">{user.id.slice(0, 8)}</p>
+                </div>
+                <div className="flex gap-2 text-xs">
+                  <span className={`px-2 py-1 rounded ${user.isActive ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                    {user.isActive ? 'فعال' : 'غیرفعال'}
+                  </span>
+                  {user.isBlocked && <span className="px-2 py-1 rounded bg-red-100 text-red-700">مسدود</span>}
+                </div>
+              </div>
+              <div className="flex gap-2 text-xs text-slate-600 flex-wrap">
+                {user.orders.slice(0, 2).map((order) => (
+                  <span key={order.id} className="px-2 py-1 rounded bg-slate-100">
+                    سفارش {order.status}
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <button className="button" onClick={() => updateUserFlags(user.id, { isBlocked: !user.isBlocked })}>
+                  {user.isBlocked ? 'رفع مسدودی' : 'مسدود کردن'}
+                </button>
+                <button className="button" onClick={() => updateUserFlags(user.id, { isActive: !user.isActive })}>
+                  {user.isActive ? 'غیرفعال' : 'فعال‌سازی'}
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       </section>
 
