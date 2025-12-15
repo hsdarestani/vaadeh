@@ -8,6 +8,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationOrchestrator } from '../notifications/notification.orchestrator';
+import { NotificationService } from '../notifications/notification.service';
 import { EventLogService } from '../event-log/event-log.service';
 import { ProductEventService } from '../event-log/product-event.service';
 import { CreateVendorDto } from './dto/create-vendor.dto';
@@ -24,7 +25,8 @@ export class AdminService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationOrchestrator,
     private readonly eventLog: EventLogService,
-    private readonly productEvents: ProductEventService
+    private readonly productEvents: ProductEventService,
+    private readonly notificationService: NotificationService
   ) {}
 
   listVendors() {
@@ -314,6 +316,34 @@ export class AdminService {
 
   notificationLog() {
     return this.prisma.notificationLog.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
+  }
+
+  async notificationHealth() {
+    const [counts, queue] = await Promise.all([
+      this.prisma.notificationLog.groupBy({
+        by: ['channel', 'status'],
+        _count: { _all: true }
+      }),
+      this.notificationService.queueMetrics()
+    ]);
+    return { counts, queue };
+  }
+
+  async funnel() {
+    const events = await this.prisma.productEvent.groupBy({
+      by: ['eventName'],
+      _count: { _all: true },
+      where: {
+        eventName: { in: ['menu_view', 'checkout_completed', 'payment_paid', 'delivered'] }
+      }
+    });
+    const lookup = Object.fromEntries(events.map((e) => [e.eventName, e._count._all]));
+    return {
+      menuViews: lookup.menu_view ?? 0,
+      checkout: lookup.checkout_completed ?? 0,
+      payment: lookup.payment_paid ?? 0,
+      delivered: lookup.delivered ?? 0
+    };
   }
 
   eventLog() {

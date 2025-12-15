@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3000/api';
 
@@ -67,6 +67,21 @@ export type NotificationLog = {
   lastError?: string | null;
 };
 
+export type NotificationHealth = {
+  counts: { channel: string; status: string; _count: { _all: number } }[];
+  queue: {
+    dispatcherCounts?: Record<string, number> | null;
+    deadLetterCounts?: Record<string, number> | null;
+  };
+};
+
+export type Funnel = {
+  menuViews: number;
+  checkout: number;
+  payment: number;
+  delivered: number;
+};
+
 export type AdminUser = {
   id: string;
   mobile: string;
@@ -84,31 +99,12 @@ export type EventLog = {
   metadata: Record<string, unknown>;
 };
 
-function useToken() {
-  const [token, setToken] = useState<string | null>(null);
-  useEffect(() => {
-    setToken(localStorage.getItem('vaadeh_admin_token'));
-  }, []);
-
-  const save = (next: string) => {
-    localStorage.setItem('vaadeh_admin_token', next);
-    setToken(next);
-  };
-
-  const clear = () => {
-    localStorage.removeItem('vaadeh_admin_token');
-    setToken(null);
-  };
-
-  return { token, save, clear };
-}
-
-async function apiFetch<T>(path: string, token: string, init?: RequestInit): Promise<T> {
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
+    credentials: 'include',
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
       ...(init?.headers ?? {})
     }
   });
@@ -117,9 +113,10 @@ async function apiFetch<T>(path: string, token: string, init?: RequestInit): Pro
 }
 
 export default function Dashboard() {
-  const { token, save, clear } = useToken();
   const [mobile, setMobile] = useState('');
   const [otp, setOtp] = useState('');
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [orders, setOrders] = useState<Order[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
@@ -128,6 +125,8 @@ export default function Dashboard() {
   const [message, setMessage] = useState<string | null>(null);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [notifications, setNotifications] = useState<NotificationLog[]>([]);
+  const [notificationHealth, setNotificationHealth] = useState<NotificationHealth | null>(null);
+  const [funnel, setFunnel] = useState<Funnel | null>(null);
   const [events, setEvents] = useState<EventLog[]>([]);
   const [orderStatusFilter, setOrderStatusFilter] = useState<string>('');
   const [orderVendorFilter, setOrderVendorFilter] = useState<string>('');
@@ -139,43 +138,70 @@ export default function Dashboard() {
     telegramChatId: ''
   });
 
-  const loggedIn = useMemo(() => Boolean(token), [token]);
-
-  const refreshAll = useCallback(async () => {
-    if (!token) return;
-    try {
-      const [ordersResp, vendorsResp, kpiResp, paymentResp, notifResp, eventsResp, usersResp] = await Promise.all([
-        apiFetch<Order[]>('/admin/orders', token),
-        apiFetch<Vendor[]>('/admin/vendors', token),
-        apiFetch<KPI>('/admin/kpis', token),
-        apiFetch<Payment[]>('/admin/payments', token),
-        apiFetch<NotificationLog[]>('/admin/notifications', token),
-        apiFetch<EventLog[]>('/admin/events', token),
-        apiFetch<AdminUser[]>('/admin/users', token)
-      ]);
-      setOrders(ordersResp);
-      setVendors(vendorsResp);
-      setKpis(kpiResp);
-      setPayments(paymentResp);
-      setNotifications(notifResp);
-      setEvents(eventsResp);
-      setUsers(usersResp);
-    } catch (err: any) {
-      setMessage(err.message ?? 'Load failed');
-    }
-  }, [token]);
+  const refreshAll = useCallback(
+    async (force = false) => {
+      if (!force && !loggedIn) return;
+      try {
+        const [
+          ordersResp,
+          vendorsResp,
+          kpiResp,
+          paymentResp,
+          notifResp,
+          notifHealthResp,
+          funnelResp,
+          eventsResp,
+          usersResp
+        ] = await Promise.all([
+          apiFetch<Order[]>('/admin/orders'),
+          apiFetch<Vendor[]>('/admin/vendors'),
+          apiFetch<KPI>('/admin/kpis'),
+          apiFetch<Payment[]>('/admin/payments'),
+          apiFetch<NotificationLog[]>('/admin/notifications'),
+          apiFetch<NotificationHealth>('/admin/notifications/health'),
+          apiFetch<Funnel>('/admin/funnel'),
+          apiFetch<EventLog[]>('/admin/events'),
+          apiFetch<AdminUser[]>('/admin/users')
+        ]);
+        setOrders(ordersResp);
+        setVendors(vendorsResp);
+        setKpis(kpiResp);
+        setPayments(paymentResp);
+        setNotifications(notifResp);
+        setNotificationHealth(notifHealthResp);
+        setFunnel(funnelResp);
+        setEvents(eventsResp);
+        setUsers(usersResp);
+        setLoggedIn(true);
+      } catch (err: any) {
+        setMessage(err.message ?? 'Load failed');
+        if (!force) {
+          setLoggedIn(false);
+        }
+      }
+    },
+    [loggedIn]
+  );
 
   useEffect(() => {
-    if (!token) return;
-    refreshAll();
-    const interval = setInterval(refreshAll, 15000);
+    (async () => {
+      try {
+        await refreshAll(true);
+      } catch {
+        setLoggedIn(false);
+      } finally {
+        setCheckingSession(false);
+      }
+    })();
+    const interval = setInterval(() => refreshAll(), 15000);
     return () => clearInterval(interval);
-  }, [refreshAll, token]);
+  }, [refreshAll]);
 
   const requestOtp = async () => {
     setMessage(null);
-    await fetch(`${API_BASE}/auth/request-otp`, {
+    await fetch(`${API_BASE}/auth/admin/request-otp`, {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mobile })
     });
@@ -184,8 +210,9 @@ export default function Dashboard() {
 
   const verifyOtp = async () => {
     setMessage(null);
-    const res = await fetch(`${API_BASE}/auth/verify-otp`, {
+    const res = await fetch(`${API_BASE}/auth/admin/verify-otp`, {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mobile, code: otp })
     });
@@ -193,14 +220,31 @@ export default function Dashboard() {
       setMessage('Login failed');
       return;
     }
-    const data = await res.json();
-    save(data.accessToken);
+    await res.json();
+    setLoggedIn(true);
+    void refreshAll(true);
+  };
+
+  const logout = async () => {
+    await fetch(`${API_BASE}/auth/logout`, {
+      method: 'POST',
+      credentials: 'include'
+    });
+    setLoggedIn(false);
+    setOrders([]);
+    setVendors([]);
+    setUsers([]);
+    setKpis(null);
+    setPayments([]);
+    setNotifications([]);
+    setNotificationHealth(null);
+    setFunnel(null);
+    setEvents([]);
   };
 
   const updateOrder = async (orderId: string) => {
-    if (!token) return;
     const draft = orderDrafts[orderId] ?? {};
-    await apiFetch(`/admin/orders/${orderId}`, token, {
+    await apiFetch(`/admin/orders/${orderId}`, {
       method: 'PATCH',
       body: JSON.stringify({
         status: draft.status,
@@ -216,8 +260,7 @@ export default function Dashboard() {
   };
 
   const createVendor = async () => {
-    if (!token) return;
-    await apiFetch('/admin/vendors', token, {
+    await apiFetch('/admin/vendors', {
       method: 'POST',
       body: JSON.stringify({
         name: vendorDraft.name,
@@ -233,8 +276,7 @@ export default function Dashboard() {
   };
 
   const updateUserFlags = async (userId: string, flags: { isBlocked?: boolean; isActive?: boolean }) => {
-    if (!token) return;
-    await apiFetch(`/admin/users/${userId}`, token, {
+    await apiFetch(`/admin/users/${userId}`, {
       method: 'PATCH',
       body: JSON.stringify(flags)
     });
@@ -246,6 +288,17 @@ export default function Dashboard() {
     const matchesVendor = orderVendorFilter ? order.vendor?.id === orderVendorFilter : true;
     return matchesStatus && matchesVendor;
   });
+
+  if (checkingSession) {
+    return (
+      <main className="max-w-md mx-auto">
+        <div className="card space-y-2">
+          <h1 className="text-xl font-semibold">در حال بررسی ورود...</h1>
+          <p className="text-sm text-slate-600">لطفاً چند لحظه صبر کنید.</p>
+        </div>
+      </main>
+    );
+  }
 
   if (!loggedIn) {
     return (
@@ -289,7 +342,7 @@ export default function Dashboard() {
           <button className="button" onClick={refreshAll}>
             بروزرسانی دستی
           </button>
-          <button className="button" onClick={clear}>
+          <button className="button" onClick={logout}>
             خروج
           </button>
         </div>
@@ -345,6 +398,65 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        {funnel && (
+          <div className="card space-y-2">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold">قیف سفر مشتری</h2>
+              <span className="text-sm text-slate-500">منو → پرداخت → تحویل</span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+              <div>
+                <p className="text-sm text-slate-500">مشاهده منو</p>
+                <p className="text-2xl font-bold">{funnel.menuViews}</p>
+              </div>
+              <div>
+                <p className="text-sm text-slate-500">چک‌اوت</p>
+                <p className="text-2xl font-bold">{funnel.checkout}</p>
+              </div>
+              <div>
+                <p className="text-sm text-slate-500">پرداخت</p>
+                <p className="text-2xl font-bold">{funnel.payment}</p>
+              </div>
+              <div>
+                <p className="text-sm text-slate-500">تحویل</p>
+                <p className="text-2xl font-bold">{funnel.delivered}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {notificationHealth && (
+          <div className="card space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold">سلامت اعلان‌ها</h2>
+              <span className="text-sm text-slate-500">Queue + Delivery</span>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs">
+              {notificationHealth.counts.map((c) => (
+                <span key={`${c.channel}-${c.status}`} className="px-2 py-1 rounded bg-slate-100">
+                  {c.channel} {c.status}: {c._count._all}
+                </span>
+              ))}
+            </div>
+            <div className="text-xs text-slate-600 grid grid-cols-2 gap-2">
+              <div>
+                <p className="font-semibold">Dispatcher</p>
+                <pre className="bg-slate-50 p-2 rounded">
+                  {JSON.stringify(notificationHealth.queue.dispatcherCounts ?? {}, null, 2)}
+                </pre>
+              </div>
+              <div>
+                <p className="font-semibold">Dead-letter</p>
+                <pre className="bg-slate-50 p-2 rounded">
+                  {JSON.stringify(notificationHealth.queue.deadLetterCounts ?? {}, null, 2)}
+                </pre>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
       <section className="card space-y-3">
         <div className="flex items-center justify-between">

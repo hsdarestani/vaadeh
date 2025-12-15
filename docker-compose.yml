@@ -48,6 +48,7 @@ services:
     depends_on:
       - app
       - admin-ui
+      - customer-ui
     restart: unless-stopped
 
   postgres:
@@ -63,6 +64,23 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  customer-ui:
+    build: ./customer-ui
+    env_file:
+      - .env
+    environment:
+      NEXT_PUBLIC_API_BASE: http://nginx/api
+    ports:
+      - '3002:3000'
+    depends_on:
+      - app
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000 || exit 1']
       interval: 30s
       timeout: 5s
       retries: 5

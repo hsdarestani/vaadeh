@@ -62,9 +62,15 @@ export class CustomerBotService implements OnModuleInit {
       this.logger.warn('TELEGRAM_CUSTOMER_BOT_TOKEN not set; customer bot disabled');
       return;
     }
-    this.bot = new TelegramBot(token, { polling: true });
+    const useWebhook = Boolean(process.env.TELEGRAM_WEBHOOK_SECRET);
+    this.bot = new TelegramBot(token, { polling: !useWebhook });
     this.registerHandlers();
     this.logger.log('Customer bot initialized');
+  }
+
+  handleWebhook(update: TelegramBot.Update) {
+    if (!this.bot) return;
+    this.bot.processUpdate(update);
   }
 
   private getSession(chatId: number): CustomerSession {
