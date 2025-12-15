@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
-import { DeliveryType, EventActorType, OrderStatus, Prisma } from '@prisma/client';
+import { DeliveryType, EventActorType, OrderStatus, PaymentStatus, Prisma } from '@prisma/client';
 import { AddressesService } from '../addresses/addresses.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationOrchestrator } from '../notifications/notification.orchestrator';
@@ -83,7 +83,11 @@ export class OrdersService {
 
     const totalPrice = subtotal + matching.deliveryFee;
 
-    const initialStatus = matching.deliveryType === DeliveryType.SNAPP_COD ? OrderStatus.ACCEPTED : OrderStatus.PENDING;
+    const initialStatus = OrderStatus.PLACED;
+    const initialPaymentStatus =
+      dto.payAtDelivery || matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
+        ? PaymentStatus.NONE
+        : PaymentStatus.PENDING;
 
     const order = await this.prisma.$transaction(async (tx) => {
       const created = await tx.order.create({
@@ -98,12 +102,19 @@ export class OrdersService {
           },
           deliveryType: matching.deliveryType,
           deliveryFee: new Prisma.Decimal(matching.deliveryFee),
+          deliveryFeeEstimated:
+            matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
+              ? new Prisma.Decimal(matching.deliveryFee)
+              : undefined,
           totalPrice: new Prisma.Decimal(totalPrice),
           customerNote: dto.customerNote,
           scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
           locationLat,
           locationLng,
           status: initialStatus,
+          paymentStatus: initialPaymentStatus,
+          deliverySettlementType:
+            matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE ? 'POSTPAID' : undefined,
           items: {
             create: dto.items.map((item) => {
               const variant = variants.find((v) => v.id === item.menuVariantId) as (typeof variants)[0];
@@ -118,7 +129,7 @@ export class OrdersService {
             create: {
               status: initialStatus,
               note:
-                matching.deliveryType === DeliveryType.SNAPP_COD
+                matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
                   ? 'برچسب اسنپ (پس‌کرایه) به دلیل خارج از محدوده'
                   : 'در محدوده ارسال داخلی'
             }
@@ -134,6 +145,7 @@ export class OrdersService {
       orderId: order.id,
       userId,
       vendorId: vendor.id,
+      actorType: EventActorType.USER,
       metadata: { deliveryType: matching.deliveryType, deliveryFee: matching.deliveryFee }
     });
     await this.productEvents.track('checkout_completed', {
@@ -146,33 +158,40 @@ export class OrdersService {
     return order;
   }
 
-  async transition(orderId: string, next: OrderStatus) {
+  private validateTransition(current: OrderStatus, next: OrderStatus) {
+    const allowedTransitions: Record<OrderStatus, OrderStatus[]> = {
+      [OrderStatus.DRAFT]: [OrderStatus.PLACED, OrderStatus.CANCELLED],
+      [OrderStatus.PLACED]: [OrderStatus.VENDOR_ACCEPTED, OrderStatus.VENDOR_REJECTED, OrderStatus.CANCELLED],
+      [OrderStatus.VENDOR_ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
+      [OrderStatus.VENDOR_REJECTED]: [],
+      [OrderStatus.PREPARING]: [OrderStatus.READY, OrderStatus.CANCELLED],
+      [OrderStatus.READY]: [OrderStatus.COURIER_ASSIGNED, OrderStatus.CANCELLED],
+      [OrderStatus.COURIER_ASSIGNED]: [OrderStatus.OUT_FOR_DELIVERY, OrderStatus.CANCELLED],
+      [OrderStatus.OUT_FOR_DELIVERY]: [OrderStatus.DELIVERED, OrderStatus.CANCELLED],
+      [OrderStatus.DELIVERED]: [],
+      [OrderStatus.CANCELLED]: []
+    };
+
+    const validNext = allowedTransitions[current] ?? [];
+    if (!validNext.includes(next)) {
+      throw new BadRequestException('Invalid transition');
+    }
+  }
+
+  async transition(orderId: string, next: OrderStatus, note?: string) {
     const order = await this.prisma.order.findUnique({ where: { id: orderId } });
     if (!order) {
       throw new NotFoundException('Order not found');
     }
 
-    const allowedTransitions: Record<OrderStatus, OrderStatus[]> = {
-      [OrderStatus.PENDING]: [OrderStatus.ACCEPTED, OrderStatus.CANCELLED, OrderStatus.REJECTED],
-      [OrderStatus.ACCEPTED]: [OrderStatus.DELIVERY_INTERNAL, OrderStatus.DELIVERY_SNAPP, OrderStatus.REJECTED],
-      [OrderStatus.DELIVERY_INTERNAL]: [OrderStatus.COMPLETED, OrderStatus.CANCELLED],
-      [OrderStatus.DELIVERY_SNAPP]: [OrderStatus.COMPLETED, OrderStatus.CANCELLED],
-      [OrderStatus.COMPLETED]: [],
-      [OrderStatus.REJECTED]: [],
-      [OrderStatus.CANCELLED]: []
-    };
-
-    const validNext = allowedTransitions[order.status];
-    if (!validNext.includes(next)) {
-      throw new BadRequestException('Invalid transition');
-    }
+    this.validateTransition(order.status, next);
 
     const updated = await this.prisma.order.update({
       where: { id: orderId },
       data: {
         status: next,
         history: {
-          create: { status: next }
+          create: { status: next, note }
         }
       }
     });
@@ -181,37 +200,34 @@ export class OrdersService {
       orderId,
       userId: order.userId,
       vendorId: order.vendorId,
+      actorType: EventActorType.SYSTEM,
       metadata: { from: order.status, to: next }
     });
 
-    if (next === OrderStatus.ACCEPTED) {
+    if (next === OrderStatus.VENDOR_ACCEPTED) {
       await this.notifications.onVendorAccepted(orderId);
       await this.eventLog.logEvent('vendor_accepted', {
         orderId,
         vendorId: order.vendorId,
-        userId: order.userId
+        userId: order.userId,
+        actorType: EventActorType.VENDOR
       });
     }
-    if ([OrderStatus.DELIVERY_INTERNAL, OrderStatus.DELIVERY_SNAPP, OrderStatus.COMPLETED].includes(next)) {
+    if (
+      [OrderStatus.READY, OrderStatus.COURIER_ASSIGNED, OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED].includes(
+        next
+      )
+    ) {
       await this.notifications.onDelivery(orderId, next);
     }
 
-    if (next === OrderStatus.COMPLETED) {
+    if (next === OrderStatus.DELIVERED) {
       await this.eventLog.logEvent('delivery_completed', {
         orderId,
         vendorId: order.vendorId,
-        userId: order.userId
+        userId: order.userId,
+        actorType: EventActorType.SYSTEM
       });
-    }
-    if ([OrderStatus.PREPARING, OrderStatus.DELIVERED].includes(next)) {
-      await this.notifications.onDelivery(orderId, next);
-      if (next === OrderStatus.DELIVERED) {
-        await this.eventLog.logEvent('delivery_completed', {
-          orderId,
-          vendorId: order.vendorId,
-          userId: order.userId
-        });
-      }
     }
 
     return updated;
@@ -245,9 +261,14 @@ export class OrdersService {
 
   async listVendorOpenOrders(vendorId: string) {
     return this.prisma.order.findMany({
-      where: { vendorId, status: { in: [OrderStatus.PENDING, OrderStatus.ACCEPTED] } },
+      where: {
+        vendorId,
+        status: {
+          in: [OrderStatus.PLACED, OrderStatus.VENDOR_ACCEPTED, OrderStatus.PREPARING, OrderStatus.READY]
+        }
+      },
       orderBy: { createdAt: 'desc' },
-      include: { user: true },
+      include: { user: true, items: { include: { menuVariant: { include: { menuItem: true } } } } },
       take: 5
     });
   }

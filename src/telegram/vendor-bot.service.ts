@@ -6,6 +6,7 @@ import { OrdersService } from '../orders/orders.service';
 const vendorActions = {
   ACCEPT: 'accept',
   REJECT: 'reject',
+  PREPARING: 'preparing',
   READY: 'ready',
   DELIVERED: 'delivered'
 };
@@ -19,6 +20,7 @@ const VENDOR_MENU_BUTTONS = {
 export class VendorBotService implements OnModuleInit {
   private bot?: TelegramBot;
   private readonly logger = new Logger(VendorBotService.name);
+  private readonly pendingRejections = new Map<number, string>();
 
   constructor(private readonly orders: OrdersService) {}
 
@@ -44,6 +46,7 @@ export class VendorBotService implements OnModuleInit {
           { text: '❌ رد', callback_data: `order:${orderId}:${vendorActions.REJECT}` }
         ],
         [
+          { text: '🍳 شروع آماده‌سازی', callback_data: `order:${orderId}:${vendorActions.PREPARING}` },
           { text: '🍳 آماده شد', callback_data: `order:${orderId}:${vendorActions.READY}` },
           { text: '🛵 تحویل شد', callback_data: `order:${orderId}:${vendorActions.DELIVERED}` }
         ]
@@ -76,22 +79,21 @@ export class VendorBotService implements OnModuleInit {
       try {
         switch (action) {
           case vendorActions.ACCEPT:
-            await this.orders.transition(orderId, OrderStatus.ACCEPTED);
+            await this.orders.transition(orderId, OrderStatus.VENDOR_ACCEPTED);
             break;
           case vendorActions.REJECT:
-            await this.orders.transition(orderId, OrderStatus.REJECTED);
+            this.pendingRejections.set(query.message.chat.id, orderId);
+            await this.bot?.answerCallbackQuery({ callback_query_id: query.id, text: 'علت رد را تایپ کنید' });
+            await this.bot?.sendMessage(query.message.chat.id, 'لطفاً علت رد سفارش را بنویسید.');
+            return;
+          case vendorActions.PREPARING:
+            await this.orders.transition(orderId, OrderStatus.PREPARING);
             break;
           case vendorActions.READY:
-            {
-              const deliveryStatus =
-                order.deliveryType === DeliveryType.SNAPP_COD
-                  ? OrderStatus.DELIVERY_SNAPP
-                  : OrderStatus.DELIVERY_INTERNAL;
-              await this.orders.transition(orderId, deliveryStatus);
-            }
+            await this.orders.transition(orderId, OrderStatus.READY);
             break;
           case vendorActions.DELIVERED:
-            await this.orders.transition(orderId, OrderStatus.COMPLETED);
+            await this.orders.transition(orderId, OrderStatus.DELIVERED);
             break;
           default:
             await this.bot?.sendMessage(query.message.chat.id, 'عملیات ناشناخته است.');
@@ -108,6 +110,16 @@ export class VendorBotService implements OnModuleInit {
 
     this.bot.on('message', async (msg) => {
       if (!msg.text || msg.text.startsWith('/')) return;
+      const pendingRejection = this.pendingRejections.get(msg.chat.id);
+      if (pendingRejection) {
+        try {
+          await this.orders.transition(pendingRejection, OrderStatus.VENDOR_REJECTED, msg.text.trim());
+          await this.bot?.sendMessage(msg.chat.id, 'سفارش رد شد و علت ثبت شد.');
+        } finally {
+          this.pendingRejections.delete(msg.chat.id);
+        }
+        return;
+      }
       const vendor = await this.orders.getVendorByChatId(msg.chat.id);
       if (!vendor) {
         await this.bot?.sendMessage(msg.chat.id, 'اکانت شما فعال نیست. لطفاً با پشتیبانی تماس بگیرید.');
@@ -122,9 +134,17 @@ export class VendorBotService implements OnModuleInit {
             break;
           }
           for (const order of orders) {
+            const lineItems = order.items
+              .map((i) => `${i.menuVariant.menuItem.name} (${i.menuVariant.code}) x${i.qty}`)
+              .join('\n');
+            const address = (order.addressSnapshot as any)?.fullAddress ?? '';
+            const settlementCopy =
+              order.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
+                ? '\nپیک اسنپ - هزینه با مشتری (پس‌کرایه)'
+                : '';
             await this.bot?.sendMessage(
               msg.chat.id,
-              `سفارش #${order.id.slice(-6)} از ${order.user.mobile}\nمبلغ: ${order.totalPrice.toString()}`,
+              `سفارش #${order.id.slice(-6)} از ${order.user.mobile}\nمبلغ: ${order.totalPrice.toString()}\n${address}\nآیتم‌ها:\n${lineItems}${settlementCopy}`,
               { reply_markup: actionKeyboard(order.id) }
             );
           }

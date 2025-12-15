@@ -1,27 +1,42 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3000/api';
 
-type Order = {
+const ORDER_STATUSES = [
+  'DRAFT',
+  'PLACED',
+  'VENDOR_ACCEPTED',
+  'VENDOR_REJECTED',
+  'PREPARING',
+  'READY',
+  'COURIER_ASSIGNED',
+  'OUT_FOR_DELIVERY',
+  'DELIVERED',
+  'CANCELLED'
+];
+
+export type Order = {
   id: string;
   status: string;
   totalPrice: string;
   deliveryFee: string;
+  paymentStatus: string;
   vendor?: { id: string; name: string };
-  user?: { mobile: string };
+  user?: { id: string; mobile: string };
   createdAt: string;
 };
 
-type Vendor = {
+export type Vendor = {
   id: string;
   name: string;
   isActive: boolean;
   serviceRadiusKm: number;
+  telegramChatId?: string | null;
 };
 
-type KPI = {
+export type KPI = {
   dailyOrders: number;
   totalSales: number;
   cancelRate: number;
@@ -29,6 +44,34 @@ type KPI = {
   averageSecondsToAccept: number;
   averageSecondsToComplete: number;
   deliveryMix: { inRange: number; outOfRange: number };
+};
+
+export type Payment = {
+  id: string;
+  orderId: string;
+  amount: string;
+  status: string;
+  createdAt: string;
+  provider: string;
+};
+
+export type NotificationLog = {
+  id: string;
+  channel: string;
+  recipient: string;
+  status: string;
+  createdAt: string;
+  eventName?: string | null;
+  lastError?: string | null;
+};
+
+export type EventLog = {
+  id: string;
+  createdAt: string;
+  eventName: string;
+  actorType?: string | null;
+  actorId?: string | null;
+  metadata: Record<string, unknown>;
 };
 
 function useToken() {
@@ -50,7 +93,7 @@ function useToken() {
   return { token, save, clear };
 }
 
-async function apiFetch(path: string, token: string, init?: RequestInit) {
+async function apiFetch<T>(path: string, token: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
@@ -72,27 +115,47 @@ export default function Dashboard() {
   const [kpis, setKpis] = useState<KPI | null>(null);
   const [statusDrafts, setStatusDrafts] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [notifications, setNotifications] = useState<NotificationLog[]>([]);
+  const [events, setEvents] = useState<EventLog[]>([]);
+  const [vendorDraft, setVendorDraft] = useState({
+    name: '',
+    lat: '',
+    lng: '',
+    serviceRadiusKm: '',
+    telegramChatId: ''
+  });
 
   const loggedIn = useMemo(() => Boolean(token), [token]);
 
+  const refreshAll = useCallback(async () => {
+    if (!token) return;
+    try {
+      const [ordersResp, vendorsResp, kpiResp, paymentResp, notifResp, eventsResp] = await Promise.all([
+        apiFetch<Order[]>('/admin/orders', token),
+        apiFetch<Vendor[]>('/admin/vendors', token),
+        apiFetch<KPI>('/admin/kpis', token),
+        apiFetch<Payment[]>('/admin/payments', token),
+        apiFetch<NotificationLog[]>('/admin/notifications', token),
+        apiFetch<EventLog[]>('/admin/events', token)
+      ]);
+      setOrders(ordersResp);
+      setVendors(vendorsResp);
+      setKpis(kpiResp);
+      setPayments(paymentResp);
+      setNotifications(notifResp);
+      setEvents(eventsResp);
+    } catch (err: any) {
+      setMessage(err.message ?? 'Load failed');
+    }
+  }, [token]);
+
   useEffect(() => {
     if (!token) return;
-    const load = async () => {
-      try {
-        const [ordersResp, vendorsResp, kpiResp] = await Promise.all([
-          apiFetch('/admin/orders', token),
-          apiFetch('/admin/vendors', token),
-          apiFetch('/admin/kpis', token)
-        ]);
-        setOrders(ordersResp);
-        setVendors(vendorsResp);
-        setKpis(kpiResp);
-      } catch (err: any) {
-        setMessage(err.message ?? 'Load failed');
-      }
-    };
-    load();
-  }, [token]);
+    refreshAll();
+    const interval = setInterval(refreshAll, 15000);
+    return () => clearInterval(interval);
+  }, [refreshAll, token]);
 
   const requestOtp = async () => {
     setMessage(null);
@@ -126,9 +189,25 @@ export default function Dashboard() {
       method: 'PATCH',
       body: JSON.stringify({ status: nextStatus })
     });
-    const refreshed = await apiFetch('/admin/orders', token);
-    setOrders(refreshed);
+    await refreshAll();
     setMessage('Order updated');
+  };
+
+  const createVendor = async () => {
+    if (!token) return;
+    await apiFetch('/admin/vendors', token, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: vendorDraft.name,
+        lat: Number(vendorDraft.lat),
+        lng: Number(vendorDraft.lng),
+        serviceRadiusKm: Number(vendorDraft.serviceRadiusKm),
+        telegramChatId: vendorDraft.telegramChatId || undefined
+      })
+    });
+    setVendorDraft({ name: '', lat: '', lng: '', serviceRadiusKm: '', telegramChatId: '' });
+    await refreshAll();
+    setMessage('Vendor created');
   };
 
   if (!loggedIn) {
@@ -169,15 +248,20 @@ export default function Dashboard() {
           <h1 className="text-3xl font-bold">داشبورد ادمین</h1>
           <p className="text-slate-600">کنترل سفارش‌ها، منو و وندورها</p>
         </div>
-        <button className="button" onClick={clear}>
-          خروج
-        </button>
+        <div className="flex gap-3 items-center">
+          <button className="button" onClick={refreshAll}>
+            بروزرسانی دستی
+          </button>
+          <button className="button" onClick={clear}>
+            خروج
+          </button>
+        </div>
       </div>
 
       {message && <div className="card text-amber-700">{message}</div>}
 
       {kpis && (
-        <div className="grid md:grid-cols-3 gap-4">
+        <div className="grid md:grid-cols-3 lg:grid-cols-6 gap-4">
           <div className="card">
             <p className="text-sm text-slate-500">سفارش امروز</p>
             <p className="text-2xl font-bold">{kpis.dailyOrders}</p>
@@ -208,7 +292,7 @@ export default function Dashboard() {
       <section className="card space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-semibold">سفارش‌ها</h2>
-          <span className="text-sm text-slate-500">آخرین ۵۰ سفارش</span>
+          <span className="text-sm text-slate-500">به‌روزرسانی خودکار ۱۵ ثانیه‌ای</span>
         </div>
         <div className="overflow-auto">
           <table className="min-w-full text-sm">
@@ -218,6 +302,7 @@ export default function Dashboard() {
                 <th className="py-2 pr-4">مشتری</th>
                 <th className="py-2 pr-4">Vendor</th>
                 <th className="py-2 pr-4">مبلغ</th>
+                <th className="py-2 pr-4">پرداخت</th>
                 <th className="py-2 pr-4">وضعیت</th>
                 <th className="py-2 pr-4">تغییر</th>
               </tr>
@@ -231,6 +316,7 @@ export default function Dashboard() {
                   <td className="py-2 pr-4">
                     {(Number(order.totalPrice) + Number(order.deliveryFee)).toLocaleString()} تومان
                   </td>
+                  <td className="py-2 pr-4">{order.paymentStatus}</td>
                   <td className="py-2 pr-4 font-semibold">{order.status}</td>
                   <td className="py-2 pr-4">
                     <div className="flex gap-2 items-center">
@@ -244,7 +330,7 @@ export default function Dashboard() {
                           }))
                         }
                       >
-                        {['PENDING', 'ACCEPTED', 'DELIVERY_INTERNAL', 'DELIVERY_SNAPP', 'COMPLETED', 'CANCELLED', 'REJECTED'].map((status) => (
+                        {ORDER_STATUSES.map((status) => (
                           <option key={status}>{status}</option>
                         ))}
                       </select>
@@ -263,7 +349,7 @@ export default function Dashboard() {
       <section className="card space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-semibold">وندورها</h2>
-          <span className="text-sm text-slate-500">فعال / ظرفیت</span>
+          <span className="text-sm text-slate-500">افزودن سریع</span>
         </div>
         <div className="grid md:grid-cols-2 gap-3">
           {vendors.map((vendor) => (
@@ -272,6 +358,7 @@ export default function Dashboard() {
                 <div>
                   <p className="font-semibold">{vendor.name}</p>
                   <p className="text-xs text-slate-500">شعاع سرویس: {vendor.serviceRadiusKm} km</p>
+                  {vendor.telegramChatId && <p className="text-xs text-slate-500">TG: {vendor.telegramChatId}</p>}
                 </div>
                 <span className={`text-xs px-2 py-1 rounded ${vendor.isActive ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
                   {vendor.isActive ? 'فعال' : 'غیرفعال'}
@@ -279,6 +366,132 @@ export default function Dashboard() {
               </div>
             </div>
           ))}
+        </div>
+        <div className="border-t pt-3 grid md:grid-cols-5 gap-2">
+          <input
+            className="border rounded px-2 py-1"
+            placeholder="نام"
+            value={vendorDraft.name}
+            onChange={(e) => setVendorDraft((prev) => ({ ...prev, name: e.target.value }))}
+          />
+          <input
+            className="border rounded px-2 py-1"
+            placeholder="Lat"
+            value={vendorDraft.lat}
+            onChange={(e) => setVendorDraft((prev) => ({ ...prev, lat: e.target.value }))}
+          />
+          <input
+            className="border rounded px-2 py-1"
+            placeholder="Lng"
+            value={vendorDraft.lng}
+            onChange={(e) => setVendorDraft((prev) => ({ ...prev, lng: e.target.value }))}
+          />
+          <input
+            className="border rounded px-2 py-1"
+            placeholder="شعاع خدمت"
+            value={vendorDraft.serviceRadiusKm}
+            onChange={(e) => setVendorDraft((prev) => ({ ...prev, serviceRadiusKm: e.target.value }))}
+          />
+          <input
+            className="border rounded px-2 py-1"
+            placeholder="Telegram Chat ID"
+            value={vendorDraft.telegramChatId}
+            onChange={(e) => setVendorDraft((prev) => ({ ...prev, telegramChatId: e.target.value }))}
+          />
+          <button className="button col-span-full md:col-span-1" onClick={createVendor} disabled={!vendorDraft.name}>
+            ایجاد وندور
+          </button>
+        </div>
+      </section>
+
+      <section className="grid lg:grid-cols-2 gap-4">
+        <div className="card space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold">پرداخت‌ها</h2>
+            <span className="text-sm text-slate-500">آخرین ۵۰ پرداخت</span>
+          </div>
+          <div className="overflow-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-slate-600">
+                  <th className="py-2 pr-4">ID</th>
+                  <th className="py-2 pr-4">Order</th>
+                  <th className="py-2 pr-4">Provider</th>
+                  <th className="py-2 pr-4">Amount</th>
+                  <th className="py-2 pr-4">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payments.map((p) => (
+                  <tr key={p.id} className="border-t">
+                    <td className="py-1 pr-4">{p.id.slice(0, 8)}</td>
+                    <td className="py-1 pr-4">{p.orderId.slice(0, 8)}</td>
+                    <td className="py-1 pr-4">{p.provider}</td>
+                    <td className="py-1 pr-4">{Number(p.amount).toLocaleString()}</td>
+                    <td className="py-1 pr-4">{p.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="card space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold">اعلان‌ها</h2>
+            <span className="text-sm text-slate-500">Telegram/SMS</span>
+          </div>
+          <div className="overflow-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-slate-600">
+                  <th className="py-2 pr-4">Channel</th>
+                  <th className="py-2 pr-4">Recipient</th>
+                  <th className="py-2 pr-4">Event</th>
+                  <th className="py-2 pr-4">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {notifications.map((n) => (
+                  <tr key={n.id} className="border-t">
+                    <td className="py-1 pr-4">{n.channel}</td>
+                    <td className="py-1 pr-4">{n.recipient}</td>
+                    <td className="py-1 pr-4">{n.eventName ?? '-'}</td>
+                    <td className="py-1 pr-4">{n.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section className="card space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold">رویدادها</h2>
+          <span className="text-sm text-slate-500">آخرین ۱۰۰ رخداد محصولی/سیستمی</span>
+        </div>
+        <div className="overflow-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="text-left text-slate-600">
+                <th className="py-2 pr-4">Event</th>
+                <th className="py-2 pr-4">Actor</th>
+                <th className="py-2 pr-4">جزئیات</th>
+              </tr>
+            </thead>
+            <tbody>
+              {events.map((e) => (
+                <tr key={e.id} className="border-t">
+                  <td className="py-1 pr-4">{e.eventName}</td>
+                  <td className="py-1 pr-4">{e.actorType ?? '-'}</td>
+                  <td className="py-1 pr-4 text-xs text-slate-600 max-w-lg truncate">
+                    {JSON.stringify(e.metadata)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </section>
     </main>

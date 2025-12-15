@@ -27,7 +27,7 @@ export class AuthService {
 
     const code = this.otp.generateCode(mobile);
     await this.notifications.sendSms(mobile, `کد ورود شما: ${code}`);
-    return { mobile, codeSent: true, code }; // expose for MVP/testing
+    return { mobile, codeSent: true };
   }
 
   private signTokens(userId: string, mobile: string, role: UserRole): TokenBundle {

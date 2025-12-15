@@ -6,6 +6,8 @@ export type EventPayload = {
   orderId?: string;
   userId?: string;
   vendorId?: string;
+  actorType?: Prisma.EventActorType;
+  actorId?: string;
   correlationId?: string;
   metadata?: Record<string, unknown>;
 };
@@ -17,9 +19,19 @@ export class EventLogService {
   constructor(private readonly prisma: PrismaService) {}
 
   async logEvent(eventName: string, payload: EventPayload) {
+    const derivedActorType =
+      payload.actorType ??
+      (payload.userId
+        ? Prisma.EventActorType.USER
+        : payload.vendorId
+          ? Prisma.EventActorType.VENDOR
+          : undefined);
+
     await this.prisma.eventLog.create({
       data: {
         eventName,
+        actorType: derivedActorType,
+        actorId: payload.actorId,
         correlationId: payload.correlationId,
         metadata: (payload.metadata ?? {}) as Prisma.JsonObject,
         orderId: payload.orderId,

@@ -30,19 +30,36 @@ interface ZibalVerifyResponse {
 
 @Injectable()
 export class PaymentsService {
+  private readonly merchantId: string;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationOrchestrator,
     private readonly eventLog: EventLogService,
     private readonly productEvents: ProductEventService
-  ) {}
+  ) {
+    this.merchantId = process.env.ZIBAL_MERCHANT ?? process.env.ZIBAL_MERCHANT_ID ?? '';
+    if (!this.merchantId) {
+      throw new Error('ZIBAL_MERCHANT is required');
+    }
+  }
+
+  private requireMerchant() {
+    return this.merchantId;
+  }
 
   async requestZibal(orderId: string, userId: string) {
     const order = await this.prisma.order.findUnique({ where: { id: orderId }, include: { payment: true } });
     if (!order || order.userId !== userId) {
       throw new NotFoundException('Order not found');
     }
-    if (order.status !== OrderStatus.PENDING) {
+    if (order.paymentStatus === PaymentStatus.NONE) {
+      throw new BadRequestException('پرداخت برای این سفارش نیاز نیست');
+    }
+    if (order.paymentStatus === PaymentStatus.PAID) {
+      return { payment: order.payment, payLink: null };
+    }
+    if (order.status !== OrderStatus.PLACED) {
       throw new BadRequestException('Order not ready for payment');
     }
 
@@ -51,7 +68,7 @@ export class PaymentsService {
     const amount = new Prisma.Decimal(order.totalPrice);
     const trackId = existingPayment?.trackId ?? `${Date.now()}-${order.id.slice(0, 6)}`;
 
-    const merchant = process.env.ZIBAL_MERCHANT ?? process.env.ZIBAL_MERCHANT_ID ?? 'sandbox';
+    const merchant = this.requireMerchant();
     let responseData: ZibalRequestResponse | null = null;
     try {
       const { data } = await axios.post<ZibalRequestResponse>('https://gateway.zibal.ir/v1/request', {
@@ -118,14 +135,14 @@ export class PaymentsService {
       throw new NotFoundException('Payment not found');
     }
 
-    if (payment.status === PaymentStatus.VERIFIED) {
+    if (payment.status === PaymentStatus.PAID) {
       return { payment, orderStatus: payment.order?.status, message: 'already verified' };
     }
 
     let verifyData: ZibalVerifyResponse | null = null;
     try {
       const { data } = await axios.post<ZibalVerifyResponse>('https://gateway.zibal.ir/v1/verify', {
-        merchant: process.env.ZIBAL_MERCHANT ?? process.env.ZIBAL_MERCHANT_ID ?? 'sandbox',
+        merchant: this.requireMerchant(),
         trackId
       });
       verifyData = data;
@@ -141,7 +158,7 @@ export class PaymentsService {
       const persisted = await tx.payment.update({
         where: { id: payment.id },
         data: {
-          status: success ? PaymentStatus.VERIFIED : PaymentStatus.FAILED,
+          status: success ? PaymentStatus.PAID : PaymentStatus.FAILED,
           verifiedAt: verifiedAt ?? payment.verifiedAt
         }
       });
@@ -152,7 +169,7 @@ export class PaymentsService {
           requestId: verifyData?.refNumber ?? verifyData?.message ?? trackId,
           trackId,
           amount: payment.amount,
-          status: success ? PaymentStatus.VERIFIED : PaymentStatus.FAILED,
+          status: success ? PaymentStatus.PAID : PaymentStatus.FAILED,
           rawResponse: verifyData ?? rawPayload ?? {},
           type: PaymentAttemptType.VERIFY
         }
@@ -162,10 +179,11 @@ export class PaymentsService {
         await tx.order.update({
           where: { id: payment.orderId },
           data: {
-            status: payment.order.status === OrderStatus.PENDING ? OrderStatus.ACCEPTED : payment.order.status,
+            paymentStatus: PaymentStatus.PAID,
+            status: payment.order.status === OrderStatus.PLACED ? OrderStatus.PLACED : payment.order.status,
             history:
-              payment.order.status === OrderStatus.PENDING
-                ? { create: { status: OrderStatus.ACCEPTED } }
+              payment.order.status === OrderStatus.PLACED
+                ? { create: { status: OrderStatus.PLACED, note: 'پرداخت موفق تایید شد' } }
                 : undefined
           }
         });
@@ -182,6 +200,7 @@ export class PaymentsService {
         orderId: payment.orderId,
         userId: payment.userId ?? payment.order?.userId,
         vendorId: payment.order?.vendorId,
+        actorType: EventActorType.USER,
         metadata: { trackId }
       });
       await this.productEvents.track('payment_paid', {
@@ -209,7 +228,7 @@ export class PaymentsService {
       throw new BadRequestException('trackId is required');
     }
 
-    const payment = await this.prisma.payment.findFirst({ where: { trackId } });
+    const payment = await this.prisma.payment.findFirst({ where: { trackId }, include: { order: true } });
     if (!payment) {
       throw new NotFoundException('Payment not found');
     }
@@ -226,13 +245,18 @@ export class PaymentsService {
       }
     });
 
-    if (payment.status === PaymentStatus.VERIFIED) {
+    if (payment.status === PaymentStatus.PAID) {
       return { paymentStatus: payment.status, message: 'already verified' };
     }
 
     const successFlag = payload?.success === '1' || payload?.success === 1 || payload?.result === 100;
     if (!successFlag) {
-      await this.prisma.payment.update({ where: { id: payment.id }, data: { status: PaymentStatus.FAILED } });
+      await this.prisma.$transaction(async (tx) => {
+        await tx.payment.update({ where: { id: payment.id }, data: { status: PaymentStatus.FAILED } });
+        if (payment.orderId) {
+          await tx.order.update({ where: { id: payment.orderId }, data: { paymentStatus: PaymentStatus.FAILED } });
+        }
+      });
       await this.notifications.onPaymentFailed(payment.orderId);
       return { paymentStatus: PaymentStatus.FAILED };
     }

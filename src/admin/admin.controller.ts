@@ -87,4 +87,9 @@ export class AdminController {
   notificationLog() {
     return this.admin.notificationLog();
   }
+
+  @Get('events')
+  eventLog() {
+    return this.admin.eventLog();
+  }
 }

@@ -17,7 +17,10 @@ export class NotificationOrchestrator {
           { text: '❌ رد', callback_data: `order:${orderId}:reject` }
         ],
         [
-          { text: '🍳 آماده شد', callback_data: `order:${orderId}:ready` },
+          { text: '🍳 شروع آماده‌سازی', callback_data: `order:${orderId}:preparing` },
+          { text: '📦 آماده تحویل', callback_data: `order:${orderId}:ready` }
+        ],
+        [
           { text: '🛵 تحویل شد', callback_data: `order:${orderId}:delivered` }
         ]
       ]
@@ -29,7 +32,9 @@ export class NotificationOrchestrator {
       where: { id: orderId },
       include: {
         user: true,
-        vendor: true
+        vendor: true,
+        items: { include: { menuVariant: { include: { menuItem: true } } } },
+        history: { orderBy: { changedAt: 'asc' } }
       }
     });
   }
@@ -39,11 +44,14 @@ export class NotificationOrchestrator {
     if (!order) return;
 
     const deliveryCopy =
-      order.deliveryType === DeliveryType.SNAPP_COD
+      order.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
         ? '🚕 سفارش شما خارج از محدوده است و با برچسب اسنپ (پس‌کرایه) ثبت شد.'
         : '🚚 سفارش شما در محدوده ارسال است.';
 
-    const customerMessage = `سفارش شما ثبت شد.\nکد سفارش: ${order.id.slice(-6)}\n${deliveryCopy}`;
+    const lineItems = order.items
+      .map((item) => `${item.menuVariant.menuItem.name} (${item.menuVariant.code}) x${item.qty}`)
+      .join('\n');
+    const customerMessage = `سفارش شما ثبت شد.\nکد سفارش: ${order.id.slice(-6)}\n${deliveryCopy}\n${lineItems}`;
 
     if (order.user.telegramUserId) {
       await this.notifications.sendTelegram(order.user.telegramUserId, customerMessage, {
@@ -55,7 +63,11 @@ export class NotificationOrchestrator {
     await this.notifications.sendSms(order.user.mobile, customerMessage);
 
     if (order.vendor.telegramChatId) {
-      const vendorMessage = `سفارش جدید #${order.id.slice(-6)} از ${order.user.mobile}\nمبلغ کل: ${order.totalPrice.toString()}`;
+      const settlementCopy =
+        order.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
+          ? '\nاین سفارش با پیک اسنپ و پس‌کرایه است؛ هزینه پیک از مشتری دریافت می‌شود.'
+          : '';
+      const vendorMessage = `سفارش جدید #${order.id.slice(-6)} از ${order.user.mobile}\nمبلغ کل: ${order.totalPrice.toString()}\nآدرس: ${order.addressSnapshot?.fullAddress}\nآیتم‌ها:\n${lineItems}${settlementCopy}`;
       await this.notifications.sendTelegram(order.vendor.telegramChatId, vendorMessage, {
         target: 'vendor',
         eventName: 'onOrderCreated',
@@ -162,9 +174,7 @@ export class NotificationOrchestrator {
     if (!order) return;
 
     const finalMessage =
-      status === OrderStatus.COMPLETED
-        ? 'سفارش تحویل داده شد. نوش جان!'
-        : 'وضعیت سفارش به‌روزرسانی شد.';
+      status === OrderStatus.DELIVERED ? 'سفارش تحویل داده شد. نوش جان!' : 'وضعیت سفارش به‌روزرسانی شد.';
 
     if (order.user.telegramUserId) {
       await this.notifications.sendTelegram(order.user.telegramUserId, finalMessage, {

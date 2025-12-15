@@ -44,7 +44,7 @@ export class VendorMatchingService {
       where: {
         vendorId,
         createdAt: { gte: start, lte: end },
-        status: { notIn: [OrderStatus.CANCELLED, OrderStatus.REJECTED] }
+        status: { notIn: [OrderStatus.CANCELLED, OrderStatus.VENDOR_REJECTED] }
       }
     });
 
@@ -68,7 +68,7 @@ export class VendorMatchingService {
     }
 
     const inRange = distanceKm <= input.vendor.serviceRadiusKm;
-    const deliveryType = inRange ? DeliveryType.IN_RANGE : DeliveryType.SNAPP_COD;
+    const deliveryType = inRange ? DeliveryType.IN_ZONE_INTERNAL : DeliveryType.SNAPP_COURIER_OUT_OF_ZONE;
     const deliveryFee = inRange ? Number(process.env.INTERNAL_DELIVERY_FEE ?? 0) : 0;
 
     return { vendor: input.vendor, deliveryType, deliveryFee, distanceKm };

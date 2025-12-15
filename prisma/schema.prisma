@@ -23,6 +23,8 @@ model User {
   addresses      Address[]
   orders         Order[]
   payments       Payment[]
+  notificationLogs NotificationLog[]
+  eventLogs      EventLog[]
 }
 
 model Address {
@@ -54,6 +56,8 @@ model Vendor {
 
   menuItems MenuItem[]
   orders    Order[]
+  notificationLogs NotificationLog[]
+  eventLogs EventLog[]
 }
 
 model MenuItem {
@@ -91,6 +95,9 @@ model Order {
   vendorId        String
   addressSnapshot Json
   deliveryType    DeliveryType
+  deliverySettlementType DeliverySettlementType?
+  deliveryFeeEstimated Decimal? @db.Decimal(10, 2)
+  deliveryFeeFinal     Decimal? @db.Decimal(10, 2)
   deliveryFee     Decimal             @db.Decimal(10, 2) @default(0)
   totalPrice      Decimal             @db.Decimal(10, 2)
   adminNote       String?
@@ -98,13 +105,16 @@ model Order {
   scheduledAt     DateTime?
   locationLat     Float
   locationLng     Float
-  status          OrderStatus         @default(PENDING)
+  status          OrderStatus         @default(DRAFT)
+  paymentStatus   PaymentStatus       @default(PENDING)
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   vendor  Vendor  @relation(fields: [vendorId], references: [id], onDelete: Cascade)
   items   OrderItem[]
   history OrderStatusHistory[]
   payment Payment?
+  notifications NotificationLog[]
+  events EventLog[]
 }
 
 model OrderItem {
@@ -138,7 +148,7 @@ model Payment {
   provider   PaymentProvider
   trackId    String
   amount     Decimal       @db.Decimal(10, 2)
-  status     PaymentStatus @default(INITIATED)
+  status     PaymentStatus @default(PENDING)
   verifiedAt DateTime?
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -164,27 +174,32 @@ model PaymentAttempt {
 
 enum OrderStatus {
   DRAFT
-  WAITING_FOR_PAYMENT
-  PAID
-  SENT_TO_VENDOR
-  ACCEPTED
-  DELIVERY_INTERNAL
-  DELIVERY_SNAPP
-  COMPLETED
-  REJECTED
+  PLACED
+  VENDOR_ACCEPTED
+  VENDOR_REJECTED
+  PREPARING
+  READY
+  COURIER_ASSIGNED
+  OUT_FOR_DELIVERY
+  DELIVERED
   CANCELLED
 }
 
 enum DeliveryType {
-  IN_RANGE
-  SNAPP_COD
+  IN_ZONE_INTERNAL
+  SNAPP_COURIER_OUT_OF_ZONE
 }
 
 enum PaymentStatus {
-  INITIATED
+  NONE
   PENDING
-  VERIFIED
+  PAID
   FAILED
+  REFUNDED
+}
+
+enum DeliverySettlementType {
+  POSTPAID
 }
 
 enum PaymentProvider {
@@ -200,6 +215,12 @@ enum PaymentAttemptType {
 enum NotificationChannel {
   TELEGRAM
   SMS
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
 }
 
 enum EventActorType {
@@ -228,6 +249,8 @@ model EventLog {
   id            String   @id @default(cuid())
   createdAt     DateTime @default(now())
   eventName     String
+  actorType     EventActorType?
+  actorId       String?
   correlationId String?
   metadata      Json
 
@@ -248,6 +271,9 @@ model NotificationLog {
   recipient String
   message   String
   eventName String?
+  status    NotificationStatus   @default(PENDING)
+  attempts  Int                  @default(0)
+  lastError String?
 
   order   Order? @relation(fields: [orderId], references: [id], onDelete: Cascade)
   orderId String?

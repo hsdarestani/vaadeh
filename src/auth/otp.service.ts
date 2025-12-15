@@ -1,9 +1,12 @@
 import { Injectable, TooManyRequestsException } from '@nestjs/common';
-import { randomInt } from 'crypto';
+import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'crypto';
 
 interface OtpEntry {
-  code: string;
+  hash: Buffer;
+  salt: Buffer;
   expiresAt: number;
+  attempts: number;
+  lockedUntil?: number;
 }
 
 @Injectable()
@@ -13,11 +16,15 @@ export class OtpService {
   private ttlMs = 5 * 60 * 1000;
   private windowMs = 10 * 60 * 1000;
   private maxAttempts = Number(process.env.OTP_RATE_LIMIT_PER_WINDOW ?? 5);
+  private maxVerifyAttempts = 5;
+  private lockoutMs = 10 * 60 * 1000;
 
   generateCode(mobile: string): string {
     this.enforceRateLimit(mobile);
     const code = randomInt(1000, 9999).toString();
-    this.codes.set(mobile, { code, expiresAt: Date.now() + this.ttlMs });
+    const salt = randomBytes(16);
+    const hash = scryptSync(code, salt, 32);
+    this.codes.set(mobile, { hash, salt, expiresAt: Date.now() + this.ttlMs, attempts: 0 });
     const now = Date.now();
     const attempts = this.attempts.get(mobile) ?? [];
     attempts.push(now);
@@ -40,10 +47,24 @@ export class OtpService {
   verifyCode(mobile: string, code: string): boolean {
     const entry = this.codes.get(mobile);
     if (!entry) return false;
-    const valid = entry.code === code && Date.now() < entry.expiresAt;
+    if (entry.lockedUntil && entry.lockedUntil > Date.now()) return false;
+    if (Date.now() > entry.expiresAt) {
+      this.codes.delete(mobile);
+      return false;
+    }
+
+    const computed = scryptSync(code, entry.salt, entry.hash.length);
+    const valid = timingSafeEqual(computed, entry.hash);
     if (valid) {
       this.codes.delete(mobile);
+      return true;
     }
-    return valid;
+
+    entry.attempts += 1;
+    if (entry.attempts >= this.maxVerifyAttempts) {
+      entry.lockedUntil = Date.now() + this.lockoutMs;
+    }
+    this.codes.set(mobile, entry);
+    return false;
   }
 }
