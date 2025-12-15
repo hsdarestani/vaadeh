@@ -9,6 +9,43 @@ Vaadeh is a **server-based, production-ready MVP** for a modern food ordering pl
 3. Start the dev server: `npm run start:dev` (NestJS + TypeScript strict mode).
 4. Optional: run with Docker + PostgreSQL: `docker compose up --build`.
 
+## 🚀 Production Runbook (single VPS)
+
+1) Prepare environment (`.env` required in prod, no wildcards):
+
+- `ALLOWED_ORIGINS` **must** list real domains (e.g., `https://app.example.com,https://admin.example.com`).
+- Payment: `ZIBAL_MERCHANT`, `ZIBAL_CALLBACK_URL`, `ZIBAL_CALLBACK_SECRET`, optional `ZIBAL_CALLBACK_IP_WHITELIST`.
+- Delivery: `SNAPP_API_BASE_URL`, `SNAPP_CLIENT_ID`, `SNAPP_CLIENT_SECRET`, `SNAPP_WEBHOOK_SECRET`.
+- Bots/SMS: `TELEGRAM_CUSTOMER_BOT_TOKEN`, `TELEGRAM_VENDOR_BOT_TOKEN`, `TELEGRAM_ADMIN_CHAT_ID`, `MELIPAYAMAK_*`.
+
+2) Provision the host (installs Docker + Compose, migrates, seeds, and boots the stack):
+
+```bash
+bash scripts/provision.sh
+# services: Postgres + Redis + API (Nest) + admin-ui + customer-ui
+```
+
+3) Verify healthchecks: `docker compose -f deploy/docker-compose.prod.yml ps` and hit `https://api.your-domain/api/health`.
+
+4) Seeded identities (override in `prisma/seed.ts` if needed):
+
+- Admin: `+10000000000`
+- Customer: `+19999999999` with a default address
+- Vendor: "Demo Vendor" with a sample two-variant menu
+
+5) Connect bots + payments:
+
+- Set Telegram webhooks to `https://api.your-domain/api/telegram/webhook` with `TELEGRAM_WEBHOOK_SECRET`.
+- Configure Zibal callback to `.../api/payments/zibal/callback`.
+- Configure Snapp webhook to `.../api/orders/snapp/webhook` with `SNAPP_WEBHOOK_SECRET`.
+- Update SMS templates in Melipayamak to match OTP texts.
+
+6) Operations & observability:
+
+- JSON logs with correlation IDs are emitted via Winston to stdout + `logs/app-*.log`.
+- Admin dashboard now shows daily KPIs (orders, GMV, cancel rate, SLA per stage) and vendor performance tables.
+- Payment webhook + auth OTP endpoints are heavily throttled by controller-level `@Throttle` + in-memory rate limiting.
+
 Key tooling already wired:
 - NestJS with strict TypeScript
 - ESLint + Prettier

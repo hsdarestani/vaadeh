@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import {
   CourierStatus,
   DeliveryProvider,
@@ -7,7 +7,8 @@ import {
   EventActorType,
   OrderStatus,
   PaymentStatus,
-  Prisma
+  Prisma,
+  SnappRequestStatus
 } from '@prisma/client';
 import { AddressesService } from '../addresses/addresses.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -16,6 +17,7 @@ import { EventLogService } from '../event-log/event-log.service';
 import { ProductEventService } from '../event-log/product-event.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { VendorMatchingService } from './vendor-matching.service';
+import { SnappService } from './snapp.service';
 
 interface CartItem {
   menuVariantId: string;
@@ -30,7 +32,8 @@ export class OrdersService {
     private readonly notifications: NotificationOrchestrator,
     private readonly eventLog: EventLogService,
     private readonly productEvents: ProductEventService,
-    private readonly vendorMatching: VendorMatchingService
+    private readonly vendorMatching: VendorMatchingService,
+    private readonly snapp: SnappService
   ) {}
 
   async create(userId: string, dto: CreateOrderDto) {
@@ -121,11 +124,12 @@ export class OrdersService {
           deliveryType: matching.deliveryType,
           deliveryProvider: matching.deliveryProvider,
           deliveryFee: new Prisma.Decimal(matching.deliveryFee),
-          deliveryFeeEstimated:
+          deliveryFeeEstimate:
             matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
               ? new Prisma.Decimal(matching.deliveryFee)
               : undefined,
           deliveryPricing: matching.pricingBreakdown,
+          outOfZone: matching.outOfZone,
           courierStatus: matching.courierStatus ?? CourierStatus.PENDING,
           totalPrice: new Prisma.Decimal(totalPrice),
           customerNote: dto.customerNote,
@@ -135,7 +139,7 @@ export class OrdersService {
           status: initialStatus,
           paymentStatus: initialPaymentStatus,
           isCOD,
-          deliverySettlementType: isCOD ? DeliverySettlementType.POSTPAID : undefined,
+          deliverySettlementType: isCOD ? DeliverySettlementType.COD : DeliverySettlementType.PREPAID,
           snappStatus:
             matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
               ? 'PENDING_ADMIN_REVIEW'
@@ -234,13 +238,27 @@ export class OrdersService {
     }
   }
 
-  async transition(orderId: string, next: OrderStatus, note?: string) {
-    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
+  async transition(
+    orderId: string,
+    next: OrderStatus,
+    note?: string,
+    actorType: EventActorType = EventActorType.SYSTEM,
+    actorId?: string
+  ) {
+    const order = await this.prisma.order.findUnique({ where: { id: orderId }, include: { vendor: true } });
     if (!order) {
       throw new NotFoundException('Order not found');
     }
 
     this.validateTransition(order.status, next);
+
+    const effectiveActorType = actorType ?? EventActorType.SYSTEM;
+    const effectiveActorId = actorId ??
+      (effectiveActorType === EventActorType.USER
+        ? order.userId
+        : effectiveActorType === EventActorType.VENDOR
+          ? order.vendorId
+          : undefined);
 
     const updated = await this.prisma.order.update({
       where: { id: orderId },
@@ -252,13 +270,56 @@ export class OrdersService {
       }
     });
 
-      await this.eventLog.logEvent('ORDER_STATUS_CHANGE', {
-        orderId,
-        userId: order.userId,
-        vendorId: order.vendorId,
-        actorType: EventActorType.SYSTEM,
-        metadata: { from: order.status, to: next }
-      });
+    if (next === OrderStatus.READY && order.deliveryProvider === DeliveryProvider.SNAPP && !order.snappRequestId) {
+      const pickup = {
+        lat: order.vendor.lat,
+        lng: order.vendor.lng,
+        address: order.vendor.name
+      };
+      const dropoff = {
+        lat: order.locationLat,
+        lng: order.locationLng,
+        address: (order.addressSnapshot as any)?.fullAddress ?? 'Customer address'
+      };
+      const snappResult = await this.snapp.requestCourier({ orderId, pickup, dropoff });
+      if (snappResult.requestId) {
+        await this.prisma.order.update({
+          where: { id: orderId },
+          data: {
+            snappRequestId: snappResult.requestId,
+            snappStatus: snappResult.status,
+            courierStatus: snappResult.courierStatus ?? order.courierStatus,
+            deliverySettlementType: DeliverySettlementType.COD,
+            isCOD: true
+          }
+        });
+        await this.eventLog.logEvent('COURIER_REQUESTED', {
+          orderId,
+          vendorId: order.vendorId,
+          userId: order.userId,
+          actorType: effectiveActorType,
+          actorId: effectiveActorId,
+          metadata: { provider: order.deliveryProvider, requestId: snappResult.requestId }
+        });
+      } else {
+        await this.eventLog.logEvent('COURIER_REQUEST_FAILED', {
+          orderId,
+          vendorId: order.vendorId,
+          userId: order.userId,
+          actorType: EventActorType.SYSTEM,
+          metadata: { provider: order.deliveryProvider, reason: 'snapp_request_failed' }
+        });
+      }
+    }
+
+    await this.eventLog.logEvent('ORDER_STATUS_CHANGE', {
+      orderId,
+      userId: order.userId,
+      vendorId: order.vendorId,
+      actorType: effectiveActorType,
+      actorId: effectiveActorId,
+      metadata: { from: order.status, to: next }
+    });
 
     if (next === OrderStatus.VENDOR_ACCEPTED) {
       await this.notifications.onVendorAccepted(orderId);
@@ -266,11 +327,12 @@ export class OrdersService {
         orderId,
         vendorId: order.vendorId,
         userId: order.userId,
-        actorType: EventActorType.VENDOR
+        actorType: effectiveActorType,
+        actorId: effectiveActorId
       });
       await this.productEvents.track('vendor_accepted', {
-        actorType: EventActorType.VENDOR,
-        actorId: order.vendorId,
+        actorType: effectiveActorType,
+        actorId: effectiveActorId ?? order.vendorId,
         orderId,
         metadata: { previousStatus: order.status }
       });
@@ -281,11 +343,12 @@ export class OrdersService {
         orderId,
         vendorId: order.vendorId,
         userId: order.userId,
-        actorType: EventActorType.VENDOR
+        actorType: effectiveActorType,
+        actorId: effectiveActorId
       });
       await this.productEvents.track('canceled', {
-        actorType: EventActorType.VENDOR,
-        actorId: order.vendorId,
+        actorType: effectiveActorType,
+        actorId: effectiveActorId ?? order.vendorId,
         orderId,
         metadata: { reason: 'vendor_rejected' }
       });
@@ -300,8 +363,8 @@ export class OrdersService {
 
     if (next === OrderStatus.OUT_FOR_DELIVERY) {
       await this.productEvents.track('out_for_delivery', {
-        actorType: EventActorType.SYSTEM,
-        actorId: order.vendorId,
+        actorType: effectiveActorType,
+        actorId: effectiveActorId ?? order.vendorId,
         orderId
       });
     }
@@ -311,25 +374,92 @@ export class OrdersService {
         orderId,
         vendorId: order.vendorId,
         userId: order.userId,
-        actorType: EventActorType.SYSTEM
+        actorType: effectiveActorType,
+        actorId: effectiveActorId
       });
       await this.productEvents.track('delivered', {
-        actorType: EventActorType.SYSTEM,
-        actorId: order.vendorId,
+        actorType: effectiveActorType,
+        actorId: effectiveActorId ?? order.vendorId,
         orderId
       });
     }
 
     if (next === OrderStatus.CANCELLED) {
       await this.productEvents.track('canceled', {
-        actorType: EventActorType.SYSTEM,
-        actorId: order.userId,
+        actorType: effectiveActorType,
+        actorId: effectiveActorId ?? order.userId,
         orderId,
         metadata: { from: order.status }
       });
     }
 
     return updated;
+  }
+
+  async handleSnappWebhook(payload: { requestId: string; status: string; driverName?: string; driverPhone?: string }) {
+    const order = await this.prisma.order.findFirst({ where: { snappRequestId: payload.requestId } });
+    if (!order) {
+      await this.eventLog.logEvent('COURIER_WEBHOOK_IGNORED', {
+        orderId: undefined,
+        metadata: { requestId: payload.requestId, status: payload.status }
+      });
+      return { handled: false };
+    }
+
+    const status = (payload.status || '').toUpperCase();
+    let nextStatus: OrderStatus | null = null;
+    let courierStatus: CourierStatus | undefined;
+    let snappStatus: SnappRequestStatus | undefined;
+
+    switch (status) {
+      case 'COURIER_ASSIGNED':
+        nextStatus = OrderStatus.COURIER_ASSIGNED;
+        courierStatus = CourierStatus.ASSIGNED;
+        snappStatus = SnappRequestStatus.COURIER_ASSIGNED;
+        break;
+      case 'OUT_FOR_DELIVERY':
+        nextStatus = OrderStatus.OUT_FOR_DELIVERY;
+        courierStatus = CourierStatus.PICKED_UP;
+        snappStatus = SnappRequestStatus.OUT_FOR_DELIVERY;
+        break;
+      case 'DELIVERED':
+        nextStatus = OrderStatus.DELIVERED;
+        courierStatus = CourierStatus.DELIVERED;
+        snappStatus = SnappRequestStatus.DELIVERED;
+        break;
+      default:
+        snappStatus = SnappRequestStatus.REQUESTED;
+    }
+
+    await this.prisma.order.update({
+      where: { id: order.id },
+      data: {
+        snappStatus,
+        courierStatus: courierStatus ?? order.courierStatus,
+        courierReference: payload.driverPhone ?? order.courierReference
+      }
+    });
+
+    const historyNote = `Snapp: ${status}${payload.driverName ? ` (${payload.driverName})` : ''}`;
+    await this.prisma.orderStatusHistory.create({
+      data: { orderId: order.id, status: order.status, note: historyNote }
+    });
+
+    if (nextStatus) {
+      try {
+        await this.transition(order.id, nextStatus, historyNote, EventActorType.SYSTEM, order.vendorId);
+      } catch (err) {
+        this.eventLog.logEvent('COURIER_STATUS_UPDATE_FAILED', {
+          orderId: order.id,
+          vendorId: order.vendorId,
+          userId: order.userId,
+          actorType: EventActorType.SYSTEM,
+          metadata: { status, error: (err as Error).message }
+        });
+      }
+    }
+
+    return { handled: true };
   }
 
   async listForUser(userId: string) {
@@ -385,6 +515,17 @@ export class OrdersService {
 
   async getVendorByChatId(chatId: number) {
     return this.prisma.vendor.findUnique({ where: { telegramChatId: chatId.toString() } });
+  }
+
+  async getVendorForUser(userId: string) {
+    const vendor = await this.prisma.vendor.findUnique({ where: { userId } });
+    if (!vendor) {
+      throw new ForbiddenException('Vendor mapping not found');
+    }
+    if (!vendor.isActive) {
+      throw new UnauthorizedException('Vendor account inactive');
+    }
+    return vendor;
   }
 
   async listVendorOpenOrders(vendorId: string) {

@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import TelegramBot from 'node-telegram-bot-api';
-import { DeliveryType, OrderStatus } from '@prisma/client';
+import { DeliveryType, EventActorType, OrderStatus } from '@prisma/client';
 import { OrdersService } from '../orders/orders.service';
 
 const vendorActions = {
@@ -85,7 +85,7 @@ export class VendorBotService implements OnModuleInit {
       try {
         switch (action) {
           case vendorActions.ACCEPT:
-            await this.orders.transition(orderId, OrderStatus.VENDOR_ACCEPTED);
+            await this.orders.transition(orderId, OrderStatus.VENDOR_ACCEPTED, undefined, EventActorType.VENDOR, vendor.id);
             break;
           case vendorActions.REJECT:
             this.pendingRejections.set(query.message.chat.id, orderId);
@@ -93,13 +93,13 @@ export class VendorBotService implements OnModuleInit {
             await this.bot?.sendMessage(query.message.chat.id, 'لطفاً علت رد سفارش را بنویسید.');
             return;
           case vendorActions.PREPARING:
-            await this.orders.transition(orderId, OrderStatus.PREPARING);
+            await this.orders.transition(orderId, OrderStatus.PREPARING, undefined, EventActorType.VENDOR, vendor.id);
             break;
           case vendorActions.READY:
-            await this.orders.transition(orderId, OrderStatus.READY);
+            await this.orders.transition(orderId, OrderStatus.READY, undefined, EventActorType.VENDOR, vendor.id);
             break;
           case vendorActions.DELIVERED:
-            await this.orders.transition(orderId, OrderStatus.DELIVERED);
+            await this.orders.transition(orderId, OrderStatus.DELIVERED, undefined, EventActorType.VENDOR, vendor.id);
             break;
           default:
             await this.bot?.sendMessage(query.message.chat.id, 'عملیات ناشناخته است.');
@@ -116,17 +116,23 @@ export class VendorBotService implements OnModuleInit {
 
     this.bot.on('message', async (msg) => {
       if (!msg.text || msg.text.startsWith('/')) return;
+      const vendor = await this.orders.getVendorByChatId(msg.chat.id);
       const pendingRejection = this.pendingRejections.get(msg.chat.id);
       if (pendingRejection) {
         try {
-          await this.orders.transition(pendingRejection, OrderStatus.VENDOR_REJECTED, msg.text.trim());
+          await this.orders.transition(
+            pendingRejection,
+            OrderStatus.VENDOR_REJECTED,
+            msg.text.trim(),
+            EventActorType.VENDOR,
+            vendor?.id
+          );
           await this.bot?.sendMessage(msg.chat.id, 'سفارش رد شد و علت ثبت شد.');
         } finally {
           this.pendingRejections.delete(msg.chat.id);
         }
         return;
       }
-      const vendor = await this.orders.getVendorByChatId(msg.chat.id);
       if (!vendor) {
         await this.bot?.sendMessage(msg.chat.id, 'اکانت شما فعال نیست. لطفاً با پشتیبانی تماس بگیرید.');
         return;

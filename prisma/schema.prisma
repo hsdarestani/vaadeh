@@ -25,6 +25,7 @@ model User {
   payments       Payment[]
   notificationLogs NotificationLog[]
   eventLogs      EventLog[]
+  vendors        Vendor[]
 }
 
 model Address {
@@ -53,6 +54,9 @@ model Vendor {
   contactPhone    String?
   isActive        Boolean    @default(true)
   maxDailyOrders  Int?
+  userId          String?    @unique
+
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   menuItems MenuItem[]
   orders    Order[]
@@ -95,13 +99,14 @@ model Order {
   vendorId        String
   addressSnapshot Json
   deliveryType    DeliveryType
-  deliveryProvider DeliveryProvider   @default(INTERNAL)
+  deliveryProvider DeliveryProvider   @default(IN_HOUSE)
   deliverySettlementType DeliverySettlementType?
   deliveryPricing Json?
-  deliveryFeeEstimated Decimal? @db.Decimal(10, 2)
+  deliveryFeeEstimate Decimal? @db.Decimal(10, 2)
   deliveryFeeFinal     Decimal? @db.Decimal(10, 2)
   deliveryFee     Decimal             @db.Decimal(10, 2) @default(0)
   isCOD           Boolean             @default(false)
+  outOfZone       Boolean             @default(false)
   totalPrice      Decimal             @db.Decimal(10, 2)
   adminNote       String?
   courierReference String?
@@ -154,6 +159,8 @@ model Payment {
   orderId    String        @unique
   provider   PaymentProvider
   trackId    String
+  transactionId String?    @unique
+  refNumber     String?    @unique
   amount     Decimal       @db.Decimal(10, 2)
   status     PaymentStatus @default(PENDING)
   verifiedAt DateTime?
@@ -198,7 +205,7 @@ enum DeliveryType {
 }
 
 enum DeliveryProvider {
-  INTERNAL
+  IN_HOUSE
   SNAPP
 }
 
@@ -211,7 +218,8 @@ enum PaymentStatus {
 }
 
 enum DeliverySettlementType {
-  POSTPAID
+  PREPAID
+  COD
 }
 
 enum CourierStatus {
@@ -239,6 +247,9 @@ enum SnappRequestStatus {
   CONFIRMED
   FAILED
   CANCELLED
+  COURIER_ASSIGNED
+  OUT_FOR_DELIVERY
+  DELIVERED
 }
 
 enum NotificationChannel {
@@ -272,6 +283,7 @@ model ProductEvent {
 enum UserRole {
   ADMIN
   OPERATOR
+  VENDOR
   CUSTOMER
 }
 

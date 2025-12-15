@@ -14,6 +14,7 @@ interface VendorMatchResult {
   deliveryFee: number;
   distanceKm: number;
   courierStatus: CourierStatus;
+  outOfZone: boolean;
   pricingBreakdown?: {
     baseFee: number;
     perKmRate: number;
@@ -78,7 +79,7 @@ export class VendorMatchingService {
 
     const inRange = distanceKm <= input.vendor.serviceRadiusKm;
     const deliveryType = inRange ? DeliveryType.IN_ZONE_INTERNAL : DeliveryType.SNAPP_COURIER_OUT_OF_ZONE;
-    const deliveryProvider = inRange ? DeliveryProvider.INTERNAL : DeliveryProvider.SNAPP;
+    const deliveryProvider = inRange ? DeliveryProvider.IN_HOUSE : DeliveryProvider.SNAPP;
 
     const baseFee = Number(process.env.SNAPP_BASE_FEE ?? 0);
     const perKmRate = Number(process.env.SNAPP_PER_KM_FEE ?? 0);
@@ -93,6 +94,7 @@ export class VendorMatchingService {
       deliveryFee,
       distanceKm,
       courierStatus: inRange ? CourierStatus.PENDING : CourierStatus.REQUESTED,
+      outOfZone: !inRange,
       pricingBreakdown: inRange
         ? undefined
         : { baseFee, perKmRate, peakMultiplier, estimatedFee: deliveryFee, distanceKm }

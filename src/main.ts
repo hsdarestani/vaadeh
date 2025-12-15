@@ -16,6 +16,9 @@ async function bootstrap(): Promise<void> {
   const logger = new WinstonLogger();
   const app = await NestFactory.create(AppModule, { logger });
   const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map((origin) => origin.trim()).filter(Boolean);
+  if (process.env.NODE_ENV === 'production' && (!allowedOrigins || allowedOrigins.length === 0)) {
+    throw new Error('ALLOWED_ORIGINS must be configured in production');
+  }
   app.enableShutdownHooks();
 
   app.set('trust proxy', 1);
@@ -52,7 +55,7 @@ async function bootstrap(): Promise<void> {
 
   app.use(
     cors({
-      origin: allowedOrigins?.length ? allowedOrigins : '*',
+      origin: allowedOrigins?.length ? allowedOrigins : ['http://localhost:3000', 'http://localhost:3001'],
       credentials: true
     })
   );
