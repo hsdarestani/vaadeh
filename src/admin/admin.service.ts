@@ -105,10 +105,12 @@ export class AdminService {
     const data: Prisma.OrderUpdateInput = {};
     if (dto.totalPrice !== undefined) data.totalPrice = new Prisma.Decimal(dto.totalPrice);
     if (dto.deliveryFee !== undefined) data.deliveryFee = new Prisma.Decimal(dto.deliveryFee);
+    if (dto.deliveryFeeFinal !== undefined) data.deliveryFeeFinal = new Prisma.Decimal(dto.deliveryFeeFinal);
     if (dto.adminNote !== undefined) data.adminNote = dto.adminNote;
+    if (dto.courierReference !== undefined) data.courierReference = dto.courierReference;
     if (dto.status) data.status = dto.status;
     if (dto.status) {
-      data.history = { create: { status: dto.status } };
+      data.history = { create: { status: dto.status, note: dto.statusNote } };
     }
 
     const updated = await this.prisma.order.update({ where: { id: orderId }, data });
@@ -126,7 +128,14 @@ export class AdminService {
       }
     }
 
-    if (dto.status || dto.totalPrice !== undefined || dto.deliveryFee !== undefined || dto.adminNote !== undefined) {
+    if (
+      dto.status ||
+      dto.totalPrice !== undefined ||
+      dto.deliveryFee !== undefined ||
+      dto.adminNote !== undefined ||
+      dto.deliveryFeeFinal !== undefined ||
+      dto.courierReference !== undefined
+    ) {
       await this.eventLog.logEvent('order_admin_override', {
         orderId,
         userId: order.userId,
@@ -137,7 +146,9 @@ export class AdminService {
           nextStatus: dto.status ?? order.status,
           totalPrice: dto.totalPrice ?? order.totalPrice,
           deliveryFee: dto.deliveryFee ?? order.deliveryFee,
-          adminNote: dto.adminNote
+          deliveryFeeFinal: dto.deliveryFeeFinal ?? order.deliveryFeeFinal,
+          adminNote: dto.adminNote ?? order.adminNote,
+          courierReference: dto.courierReference ?? order.courierReference
         }
       });
       await this.productEvents.track('admin_override', {
@@ -171,9 +182,27 @@ export class AdminService {
     });
   }
 
+  async updateUser(userId: string, dto: { isBlocked?: boolean; isActive?: boolean }) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const updated = await this.prisma.user.update({ where: { id: userId }, data: dto });
+    await this.eventLog.logEvent('admin_user_update', {
+      userId,
+      actorType: EventActorType.ADMIN,
+      metadata: { isBlocked: dto.isBlocked ?? user.isBlocked, isActive: dto.isActive ?? user.isActive }
+    });
+    return updated;
+  }
+
   async kpis() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+
+    const since = new Date();
+    since.setDate(since.getDate() - 6);
 
     const [
       dailyOrders,
@@ -185,7 +214,8 @@ export class AdminService {
       inRange,
       paymentRequested,
       paymentPaid,
-      histories
+      histories,
+      recentOrders
     ] = await Promise.all([
       this.prisma.order.count({ where: { createdAt: { gte: today } } }),
       this.prisma.order.count(),
@@ -199,6 +229,10 @@ export class AdminService {
       this.prisma.orderStatusHistory.findMany({
         where: { status: { in: [OrderStatus.PLACED, OrderStatus.VENDOR_ACCEPTED, OrderStatus.DELIVERED] } },
         orderBy: { changedAt: 'asc' }
+      }),
+      this.prisma.order.findMany({
+        where: { createdAt: { gte: since } },
+        select: { createdAt: true, status: true, deliveryType: true }
       })
     ]);
 
@@ -232,10 +266,30 @@ export class AdminService {
       }
     });
 
+    const ordersPerDay: Record<string, number> = {};
+    for (let i = 0; i < 7; i += 1) {
+      const date = new Date();
+      date.setDate(today.getDate() - i);
+      const key = date.toISOString().slice(0, 10);
+      ordersPerDay[key] = 0;
+    }
+
+    recentOrders.forEach((order) => {
+      const key = order.createdAt.toISOString().slice(0, 10);
+      if (ordersPerDay[key] !== undefined) {
+        ordersPerDay[key] += 1;
+      }
+    });
+
+    const accepted = recentOrders.filter((order) => order.status === OrderStatus.VENDOR_ACCEPTED).length;
+    const placed = recentOrders.filter((order) => order.status !== OrderStatus.CANCELLED && order.status !== OrderStatus.VENDOR_REJECTED)
+      .length;
+
     return {
       dailyOrders,
       totalSales: Number(verifiedPayments._sum.amount ?? 0),
       cancelRate: totalOrders ? cancelledOrders / totalOrders : 0,
+      acceptanceRate: placed ? accepted / placed : 0,
       vendorPerformance: vendorGroup.map((group) => ({
         vendorId: group.vendorId,
         vendorName: vendorLookup.get(group.vendorId),
@@ -244,11 +298,13 @@ export class AdminService {
       })),
       deliveryMix: {
         inRange,
-        outOfRange
+        outOfRange,
+        outOfZonePercent: inRange + outOfRange ? outOfRange / (inRange + outOfRange) : 0
       },
       paymentConversion: paymentRequested ? paymentPaid / paymentRequested : 0,
       averageSecondsToAccept: acceptanceCount ? acceptanceTotal / acceptanceCount : 0,
-      averageSecondsToComplete: completionCount ? completionTotal / completionCount : 0
+      averageSecondsToComplete: completionCount ? completionTotal / completionCount : 0,
+      ordersPerDay
     };
   }
 

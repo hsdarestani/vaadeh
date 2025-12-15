@@ -12,6 +12,7 @@ validateEnv();
 async function bootstrap(): Promise<void> {
   const logger = new WinstonLogger();
   const app = await NestFactory.create(AppModule, { logger });
+  app.enableShutdownHooks();
 
   const requestLogger = new RequestLoggerMiddleware(logger);
   app.use(requestLogger.use.bind(requestLogger));
