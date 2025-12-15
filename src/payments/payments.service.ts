@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import {
+  DeliverySettlementType,
   EventActorType,
   OrderStatus,
   PaymentAttemptType,
@@ -112,7 +113,7 @@ export class PaymentsService {
     if (!order || order.userId !== userId) {
       throw new NotFoundException('Order not found');
     }
-    if (order.paymentStatus === PaymentStatus.NONE) {
+    if (order.paymentStatus === PaymentStatus.NONE || order.deliverySettlementType === DeliverySettlementType.POSTPAID) {
       throw new BadRequestException('پرداخت برای این سفارش نیاز نیست');
     }
     if (order.paymentStatus === PaymentStatus.PAID) {
@@ -314,12 +315,12 @@ export class PaymentsService {
       return { payment: refreshed!, alreadyFinal: false };
     });
 
-      if (success && !result.alreadyFinal) {
-        await this.notifications.onPaymentSuccess(payment.orderId);
-        await this.eventLog.logEvent('PAYMENT_VERIFIED', {
-          orderId: payment.orderId,
-          userId: payment.userId ?? payment.order?.userId,
-          vendorId: payment.order?.vendorId,
+    if (success && !result.alreadyFinal) {
+      await this.notifications.onPaymentSuccess(payment.orderId);
+      await this.eventLog.logEvent('PAYMENT_VERIFIED', {
+        orderId: payment.orderId,
+        userId: payment.userId ?? payment.order?.userId,
+        vendorId: payment.order?.vendorId,
         actorType: EventActorType.USER,
         metadata: { trackId }
       });
@@ -337,6 +338,14 @@ export class PaymentsService {
       });
     } else if (!success && !result.alreadyFinal) {
       await this.notifications.onPaymentFailed(payment.orderId);
+      await this.eventLog.logEvent('PAYMENT_FAILED', {
+        orderId: payment.orderId,
+        userId: payment.userId ?? payment.order?.userId,
+        vendorId: payment.order?.vendorId,
+        actorType: EventActorType.USER,
+        entityType: 'payment',
+        metadata: { trackId, providerResult: verifyData?.result, orderMatches, amountMatches }
+      });
       await this.productEvents.track('payment_failed', {
         actorType: EventActorType.USER,
         actorId: payment.userId ?? payment.order?.userId ?? undefined,

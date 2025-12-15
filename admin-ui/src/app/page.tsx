@@ -17,12 +17,20 @@ const ORDER_STATUSES = [
   'CANCELLED'
 ];
 
+const COURIER_STATUSES = ['PENDING', 'REQUESTED', 'ASSIGNED', 'PICKED_UP', 'DELIVERED', 'CANCELLED'];
+
 export type Order = {
   id: string;
   status: string;
   totalPrice: string;
   deliveryFee: string;
+  deliveryFeeEstimated?: string | null;
   paymentStatus: string;
+  deliveryType?: string;
+  deliveryProvider?: string;
+  deliverySettlementType?: string | null;
+  isCOD?: boolean;
+  courierStatus?: string;
   vendor?: { id: string; name: string };
   user?: { id: string; mobile: string };
   createdAt: string;
@@ -38,12 +46,16 @@ export type Vendor = {
 
 export type KPI = {
   dailyOrders: number;
+  ordersThisWeek: number;
   totalSales: number;
   cancelRate: number;
   paymentConversion: number;
+  paymentSuccessRate: number;
   acceptanceRate: number;
   averageSecondsToAccept: number;
   averageSecondsToComplete: number;
+  averageFulfillmentSeconds: number;
+  codRatio: number;
   deliveryMix: { inRange: number; outOfRange: number; outOfZonePercent: number };
   ordersPerDay: Record<string, number>;
 };
@@ -128,6 +140,7 @@ export default function Dashboard() {
   const [notificationHealth, setNotificationHealth] = useState<NotificationHealth | null>(null);
   const [funnel, setFunnel] = useState<Funnel | null>(null);
   const [events, setEvents] = useState<EventLog[]>([]);
+  const [eventFilters, setEventFilters] = useState({ eventName: '', orderId: '', userId: '', actorType: '', from: '', to: '' });
   const [orderStatusFilter, setOrderStatusFilter] = useState<string>('');
   const [orderVendorFilter, setOrderVendorFilter] = useState<string>('');
   const [vendorDraft, setVendorDraft] = useState({
@@ -137,6 +150,22 @@ export default function Dashboard() {
     serviceRadiusKm: '',
     telegramChatId: ''
   });
+
+  const eventQueryString = useCallback(() => {
+    const params = new URLSearchParams();
+    if (eventFilters.eventName) params.set('eventName', eventFilters.eventName);
+    if (eventFilters.orderId) params.set('orderId', eventFilters.orderId);
+    if (eventFilters.userId) params.set('userId', eventFilters.userId);
+    if (eventFilters.actorType) params.set('actorType', eventFilters.actorType);
+    if (eventFilters.from) params.set('from', eventFilters.from);
+    if (eventFilters.to) params.set('to', eventFilters.to);
+    return params.toString();
+  }, [eventFilters]);
+
+  const fetchEvents = useCallback(async () => {
+    const qs = eventQueryString();
+    return apiFetch<EventLog[]>(`/admin/events${qs ? `?${qs}` : ''}`);
+  }, [eventQueryString]);
 
   const refreshAll = useCallback(
     async (force = false) => {
@@ -160,7 +189,7 @@ export default function Dashboard() {
           apiFetch<NotificationLog[]>('/admin/notifications'),
           apiFetch<NotificationHealth>('/admin/notifications/health'),
           apiFetch<Funnel>('/admin/funnel'),
-          apiFetch<EventLog[]>('/admin/events'),
+          fetchEvents(),
           apiFetch<AdminUser[]>('/admin/users')
         ]);
         setOrders(ordersResp);
@@ -180,7 +209,7 @@ export default function Dashboard() {
         }
       }
     },
-    [loggedIn]
+    [loggedIn, fetchEvents]
   );
 
   useEffect(() => {
@@ -242,6 +271,17 @@ export default function Dashboard() {
     setEvents([]);
   };
 
+  const applyEventFilters = async () => {
+    const filtered = await fetchEvents();
+    setEvents(filtered);
+  };
+
+  const exportEvents = () => {
+    const qs = eventQueryString();
+    const link = `${API_BASE}/admin/events${qs ? `?${qs}&` : '?'}format=csv`;
+    window.open(link, '_blank');
+  };
+
   const updateOrder = async (orderId: string) => {
     const draft = orderDrafts[orderId] ?? {};
     await apiFetch(`/admin/orders/${orderId}`, {
@@ -252,7 +292,11 @@ export default function Dashboard() {
         deliveryFee: draft.deliveryFee ? Number(draft.deliveryFee) : undefined,
         deliveryFeeFinal: draft.deliveryFeeFinal ? Number(draft.deliveryFeeFinal) : undefined,
         courierReference: draft.courierReference,
-        adminNote: draft.adminNote
+        adminNote: draft.adminNote,
+        courierStatus: draft.courierStatus,
+        deliveryProvider: draft.deliveryProvider,
+        isCOD: draft.isCOD,
+        deliverySettlementType: draft.deliverySettlementType
       })
     });
     await refreshAll();
@@ -351,50 +395,64 @@ export default function Dashboard() {
       {message && <div className="card text-amber-700">{message}</div>}
 
       {kpis && (
-        <div className="grid md:grid-cols-3 lg:grid-cols-6 gap-4">
-          <div className="card">
-            <p className="text-sm text-slate-500">سفارش امروز</p>
-            <p className="text-2xl font-bold">{kpis.dailyOrders}</p>
+        <div className="space-y-4">
+          <div className="grid md:grid-cols-3 lg:grid-cols-6 gap-4">
+            <div className="card">
+              <p className="text-sm text-slate-500">سفارش امروز</p>
+              <p className="text-2xl font-bold">{kpis.dailyOrders}</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">سفارش هفت روز اخیر</p>
+              <p className="text-2xl font-bold">{kpis.ordersThisWeek}</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">فروش کل</p>
+              <p className="text-2xl font-bold">{kpis.totalSales.toLocaleString()} تومان</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">نرخ لغو</p>
+              <p className="text-2xl font-bold">{(kpis.cancelRate * 100).toFixed(1)}%</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">نرخ پذیرش</p>
+              <p className="text-2xl font-bold">{(kpis.acceptanceRate * 100).toFixed(1)}%</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">نرخ پرداخت موفق</p>
+              <p className="text-2xl font-bold">{(kpis.paymentSuccessRate * 100).toFixed(1)}%</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">زمان تا پذیرش</p>
+              <p className="text-2xl font-bold">{kpis.averageSecondsToAccept.toFixed(0)} ثانیه</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">زمان تا تکمیل</p>
+              <p className="text-2xl font-bold">{kpis.averageFulfillmentSeconds.toFixed(0)} ثانیه</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">سهم COD</p>
+              <p className="text-2xl font-bold">{(kpis.codRatio * 100).toFixed(1)}%</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">کُنورژن پرداخت</p>
+              <p className="text-2xl font-bold">{(kpis.paymentConversion * 100).toFixed(1)}%</p>
+            </div>
+            <div className="card">
+              <p className="text-sm text-slate-500">خارج از محدوده</p>
+              <p className="text-2xl font-bold">{(kpis.deliveryMix.outOfZonePercent * 100).toFixed(1)}%</p>
+            </div>
           </div>
           <div className="card">
-            <p className="text-sm text-slate-500">فروش کل</p>
-            <p className="text-2xl font-bold">{kpis.totalSales.toLocaleString()} تومان</p>
-          </div>
-          <div className="card">
-            <p className="text-sm text-slate-500">نرخ لغو</p>
-            <p className="text-2xl font-bold">{(kpis.cancelRate * 100).toFixed(1)}%</p>
-          </div>
-          <div className="card">
-            <p className="text-sm text-slate-500">کُنورژن پرداخت</p>
-            <p className="text-2xl font-bold">{(kpis.paymentConversion * 100).toFixed(1)}%</p>
-          </div>
-          <div className="card">
-            <p className="text-sm text-slate-500">نرخ پذیرش</p>
-            <p className="text-2xl font-bold">{(kpis.acceptanceRate * 100).toFixed(1)}%</p>
-          </div>
-          <div className="card">
-            <p className="text-sm text-slate-500">زمان تا پذیرش</p>
-            <p className="text-2xl font-bold">{kpis.averageSecondsToAccept.toFixed(0)} ثانیه</p>
-          </div>
-          <div className="card">
-            <p className="text-sm text-slate-500">زمان تا تکمیل</p>
-            <p className="text-2xl font-bold">{kpis.averageSecondsToComplete.toFixed(0)} ثانیه</p>
-          </div>
-          <div className="card">
-            <p className="text-sm text-slate-500">خارج از محدوده</p>
-            <p className="text-2xl font-bold">{(kpis.deliveryMix.outOfZonePercent * 100).toFixed(1)}%</p>
-          </div>
-        </div>
-        <div className="card">
-          <p className="text-sm text-slate-500">۷ روز اخیر</p>
-          <div className="flex flex-wrap gap-2 text-xs text-slate-700">
-            {Object.entries(kpis.ordersPerDay)
-              .sort(([a], [b]) => (a > b ? 1 : -1))
-              .map(([day, count]) => (
-                <span key={day} className="px-2 py-1 rounded bg-slate-100">
-                  {day}: {count}
-                </span>
-              ))}
+            <p className="text-sm text-slate-500">۷ روز اخیر</p>
+            <div className="flex flex-wrap gap-2 text-xs text-slate-700">
+              {Object.entries(kpis.ordersPerDay)
+                .sort(([a], [b]) => (a > b ? 1 : -1))
+                .map(([day, count]) => (
+                  <span key={day} className="px-2 py-1 rounded bg-slate-100">
+                    {day}: {count}
+                  </span>
+                ))}
+            </div>
           </div>
         </div>
       )}
@@ -499,6 +557,7 @@ export default function Dashboard() {
                 <th className="py-2 pr-4">Vendor</th>
                 <th className="py-2 pr-4">مبلغ</th>
                 <th className="py-2 pr-4">پرداخت</th>
+                <th className="py-2 pr-4">ارسال</th>
                 <th className="py-2 pr-4">وضعیت</th>
                 <th className="py-2 pr-4">تغییر</th>
               </tr>
@@ -513,6 +572,22 @@ export default function Dashboard() {
                     {(Number(order.totalPrice) + Number(order.deliveryFee)).toLocaleString()} تومان
                   </td>
                   <td className="py-2 pr-4">{order.paymentStatus}</td>
+                  <td className="py-2 pr-4">
+                    <div className="flex flex-col gap-1 text-xs">
+                      <span className="px-2 py-1 rounded bg-slate-100 text-slate-700">
+                        {order.deliveryProvider || order.deliveryType || 'N/A'}
+                      </span>
+                      {order.deliveryFeeEstimated && (
+                        <span className="px-2 py-1 rounded bg-slate-50 text-slate-600">
+                          برآورد پیک: {Number(order.deliveryFeeEstimated).toLocaleString()} تومان
+                        </span>
+                      )}
+                      {order.isCOD && <span className="px-2 py-1 rounded bg-amber-100 text-amber-800">COD / پس‌کرایه</span>}
+                      {order.courierStatus && (
+                        <span className="px-2 py-1 rounded bg-blue-100 text-blue-800">پیک: {order.courierStatus}</span>
+                      )}
+                    </div>
+                  </td>
                   <td className="py-2 pr-4 font-semibold">{order.status}</td>
                   <td className="py-2 pr-4">
                     <div className="flex gap-2 items-center">
@@ -527,6 +602,20 @@ export default function Dashboard() {
                         }
                       >
                         {ORDER_STATUSES.map((status) => (
+                          <option key={status}>{status}</option>
+                        ))}
+                      </select>
+                      <select
+                        className="border rounded px-2 py-1"
+                        value={orderDrafts[order.id]?.courierStatus ?? order.courierStatus ?? 'PENDING'}
+                        onChange={(e) =>
+                          setOrderDrafts((prev) => ({
+                            ...prev,
+                            [order.id]: { ...prev[order.id], courierStatus: e.target.value }
+                          }))
+                        }
+                      >
+                        {COURIER_STATUSES.map((status) => (
                           <option key={status}>{status}</option>
                         ))}
                       </select>
@@ -574,6 +663,19 @@ export default function Dashboard() {
                           }))
                         }
                       />
+                      <label className="flex items-center gap-1 text-xs text-slate-600">
+                        <input
+                          type="checkbox"
+                          checked={orderDrafts[order.id]?.isCOD ?? order.isCOD ?? false}
+                          onChange={(e) =>
+                            setOrderDrafts((prev) => ({
+                              ...prev,
+                              [order.id]: { ...prev[order.id], isCOD: e.target.checked }
+                            }))
+                          }
+                        />
+                        COD
+                      </label>
                       <button className="button" onClick={() => updateOrder(order.id)}>
                         ذخیره
                       </button>
@@ -751,12 +853,64 @@ export default function Dashboard() {
           <h2 className="text-xl font-semibold">رویدادها</h2>
           <span className="text-sm text-slate-500">آخرین ۱۰۰ رخداد محصولی/سیستمی</span>
         </div>
+        <div className="grid md:grid-cols-2 lg:grid-cols-6 gap-2 items-end">
+          <input
+            className="input"
+            placeholder="نوع رویداد"
+            value={eventFilters.eventName}
+            onChange={(e) => setEventFilters({ ...eventFilters, eventName: e.target.value })}
+          />
+          <input
+            className="input"
+            placeholder="کد سفارش"
+            value={eventFilters.orderId}
+            onChange={(e) => setEventFilters({ ...eventFilters, orderId: e.target.value })}
+          />
+          <input
+            className="input"
+            placeholder="کاربر"
+            value={eventFilters.userId}
+            onChange={(e) => setEventFilters({ ...eventFilters, userId: e.target.value })}
+          />
+          <select
+            className="input"
+            value={eventFilters.actorType}
+            onChange={(e) => setEventFilters({ ...eventFilters, actorType: e.target.value })}
+          >
+            <option value="">همه بازیگران</option>
+            <option value="USER">USER</option>
+            <option value="VENDOR">VENDOR</option>
+            <option value="ADMIN">ADMIN</option>
+            <option value="SYSTEM">SYSTEM</option>
+          </select>
+          <input
+            type="date"
+            className="input"
+            value={eventFilters.from}
+            onChange={(e) => setEventFilters({ ...eventFilters, from: e.target.value })}
+          />
+          <input
+            type="date"
+            className="input"
+            value={eventFilters.to}
+            onChange={(e) => setEventFilters({ ...eventFilters, to: e.target.value })}
+          />
+          <div className="flex gap-2 md:col-span-2 lg:col-span-2">
+            <button className="button" onClick={applyEventFilters}>
+              اعمال فیلتر
+            </button>
+            <button className="button" onClick={exportEvents}>
+              خروجی CSV
+            </button>
+          </div>
+        </div>
         <div className="overflow-auto">
           <table className="min-w-full text-sm">
             <thead>
               <tr className="text-left text-slate-600">
                 <th className="py-2 pr-4">Event</th>
                 <th className="py-2 pr-4">Actor</th>
+                <th className="py-2 pr-4">زمان</th>
                 <th className="py-2 pr-4">جزئیات</th>
               </tr>
             </thead>
@@ -765,6 +919,7 @@ export default function Dashboard() {
                 <tr key={e.id} className="border-t">
                   <td className="py-1 pr-4">{e.eventName}</td>
                   <td className="py-1 pr-4">{e.actorType ?? '-'}</td>
+                  <td className="py-1 pr-4 text-xs">{new Date(e.createdAt).toLocaleString()}</td>
                   <td className="py-1 pr-4 text-xs text-slate-600 max-w-lg truncate">
                     {JSON.stringify(e.metadata)}
                   </td>

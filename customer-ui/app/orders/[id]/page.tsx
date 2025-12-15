@@ -31,6 +31,14 @@ export default function OrderDetailPage() {
             </div>
             <p className="text-sm text-slate-300">مبلغ: {Number(order.totalPrice).toLocaleString()} تومان</p>
             <p className="text-sm text-slate-300">پرداخت: {order.paymentStatus}</p>
+            <p className="text-sm text-slate-300">
+              ارسال: {order.deliveryProvider || order.deliveryType} {order.isCOD ? '(پس‌کرایه)' : ''}
+            </p>
+            {order.deliveryFeeEstimated && (
+              <p className="text-sm text-slate-300">
+                برآورد هزینه پیک: {Number(order.deliveryFeeEstimated).toLocaleString()} تومان
+              </p>
+            )}
             <div className="space-y-2">
               <h2 className="font-semibold text-white">آیتم‌ها</h2>
               {order.items?.map((item: any) => (

@@ -238,6 +238,10 @@ Events are logged and viewable
 
 No code change needed for daily operations
 
+🛡️ Backups & Logs
+- Structured JSON logs rotate daily with retention configured via `LOG_RETENTION_DAYS` (defaults to 60d) and include request IDs for tracing.
+- Run `deploy/backup/pg-backup.sh` with `DATABASE_URL` to generate daily Postgres dumps; tune `BACKUP_DIR` and `BACKUP_RETENTION_DAYS` for retention.
+
 🧭 Roadmap (Post-MVP)
 Custom Admin UI (Next.js)
 

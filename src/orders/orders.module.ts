@@ -7,11 +7,12 @@ import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 import { EventLogModule } from '../event-log/event-log.module';
 import { VendorMatchingService } from './vendor-matching.service';
+import { SnappService } from './snapp.service';
 
 @Module({
   imports: [PrismaModule, AddressesModule, NotificationsModule, EventLogModule],
   controllers: [OrdersController],
-  providers: [OrdersService, DefaultAddressGuard, VendorMatchingService],
-  exports: [OrdersService, VendorMatchingService]
+  providers: [OrdersService, DefaultAddressGuard, VendorMatchingService, SnappService],
+  exports: [OrdersService, VendorMatchingService, SnappService]
 })
 export class OrdersModule {}

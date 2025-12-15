@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vaadeh</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        background: radial-gradient(circle at 20% 20%, #f9fafb, #f3f4f6 45%, #e5e7eb 70%);
+        color: #111827;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .card {
+        max-width: 720px;
+        padding: 48px;
+        border-radius: 24px;
+        background: #ffffffcc;
+        backdrop-filter: blur(12px);
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.08);
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 40px;
+        letter-spacing: -0.02em;
+      }
+      p {
+        margin: 8px 0;
+        line-height: 1.6;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+        margin-top: 24px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 16px;
+        border-radius: 14px;
+        background: #f3f4f6;
+        color: #111827;
+        text-decoration: none;
+        font-weight: 600;
+        border: 1px solid #e5e7eb;
+      }
+      .pill span {
+        display: inline-block;
+      }
+      footer {
+        margin-top: 32px;
+        font-size: 14px;
+        color: #4b5563;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card" role="main">
+      <h1>Vaadeh</h1>
+      <p>A modern food ordering stack for Telegram-first experiences.</p>
+      <p>API, customer app, and admin panel are deployed behind a hardened reverse proxy.</p>
+      <div class="grid" aria-label="Links">
+        <a class="pill" href="https://app.${DOMAIN}">
+          <span>🍽️ Customer App</span>
+        </a>
+        <a class="pill" href="https://admin.${DOMAIN}">
+          <span>🛠 Admin Panel</span>
+        </a>
+        <a class="pill" href="https://api.${DOMAIN}/api/health">
+          <span>📈 API Health</span>
+        </a>
+      </div>
+      <footer>Secure by default. TLS via Let's Encrypt. Auto restart with Docker Compose.</footer>
+    </main>
+  </body>
+</html>

@@ -27,7 +27,7 @@ export class EventLogInterceptor implements NestInterceptor {
     const request = context.switchToHttp().getRequest();
     const userId = request?.user?.userId ?? request?.body?.userId;
     const orderId = request?.params?.id ?? request?.body?.orderId;
-    const correlationId = request?.correlationId ?? request?.headers?.['x-correlation-id'];
+    const correlationId = request?.correlationId ?? request?.headers?.['x-request-id'];
 
     return next.handle().pipe(
       tap(async () => {

@@ -1,9 +1,9 @@
-FROM node:20-alpine as deps
+FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
-FROM node:20-alpine as builder
+FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -24,6 +24,6 @@ COPY --from=builder /app/next.config.js ./next.config.js
 COPY --from=builder /app/postcss.config.js ./postcss.config.js
 COPY --from=builder /app/tailwind.config.js ./tailwind.config.js
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
-COPY --from=builder /app/src ./src
+COPY --from=builder /app/app ./app
 EXPOSE 3000
 CMD ["npm", "start"]

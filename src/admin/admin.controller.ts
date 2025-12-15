@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
+import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -12,6 +13,7 @@ import { CreateMenuVariantDto } from './dto/create-menu-variant.dto';
 import { UpdateMenuVariantDto } from './dto/update-menu-variant.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { EventQueryDto } from './dto/event-query.dto';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -113,7 +115,7 @@ export class AdminController {
   }
 
   @Get('events')
-  eventLog() {
-    return this.admin.eventLog();
+  eventLog(@Query() query: EventQueryDto, @Res() res: Response) {
+    return this.admin.eventLog(query, res);
   }
 }

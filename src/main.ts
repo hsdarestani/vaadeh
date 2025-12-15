@@ -15,18 +15,44 @@ validateEnv();
 async function bootstrap(): Promise<void> {
   const logger = new WinstonLogger();
   const app = await NestFactory.create(AppModule, { logger });
+  const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map((origin) => origin.trim()).filter(Boolean);
   app.enableShutdownHooks();
+
+  app.set('trust proxy', 1);
 
   app.use(
     helmet({
       crossOriginEmbedderPolicy: false,
-      contentSecurityPolicy: false
+      contentSecurityPolicy: {
+        useDefaults: true,
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", 'data:'],
+          connectSrc: [
+            "'self'",
+            'http:',
+            'https:',
+            'wss:',
+            ...(allowedOrigins?.length ? allowedOrigins : [])
+          ],
+          fontSrc: ["'self'", 'data:'],
+          objectSrc: ["'none'"],
+          frameAncestors: ["'none'"],
+          baseUri: ["'self'"]
+        }
+      },
+      hsts: {
+        maxAge: 31536000,
+        includeSubDomains: true
+      }
     })
   );
 
   app.use(
     cors({
-      origin: process.env.ALLOWED_ORIGINS?.split(',') ?? '*',
+      origin: allowedOrigins?.length ? allowedOrigins : '*',
       credentials: true
     })
   );

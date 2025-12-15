@@ -1,5 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
+  CourierStatus,
+  DeliveryProvider,
+  DeliverySettlementType,
   DeliveryType,
   EventActorType,
   OrderStatus,
@@ -18,6 +21,8 @@ import { UpdateMenuItemDto } from './dto/update-menu-item.dto';
 import { CreateMenuVariantDto } from './dto/create-menu-variant.dto';
 import { UpdateMenuVariantDto } from './dto/update-menu-variant.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
+import { EventQueryDto } from './dto/event-query.dto';
+import { Response } from 'express';
 
 @Injectable()
 export class AdminService {
@@ -110,6 +115,11 @@ export class AdminService {
     if (dto.deliveryFeeFinal !== undefined) data.deliveryFeeFinal = new Prisma.Decimal(dto.deliveryFeeFinal);
     if (dto.adminNote !== undefined) data.adminNote = dto.adminNote;
     if (dto.courierReference !== undefined) data.courierReference = dto.courierReference;
+    if (dto.courierStatus !== undefined) data.courierStatus = dto.courierStatus;
+    if (dto.deliveryProvider !== undefined) data.deliveryProvider = dto.deliveryProvider;
+    if (dto.deliverySettlementType !== undefined) data.deliverySettlementType = dto.deliverySettlementType;
+    if (dto.isCOD !== undefined) data.isCOD = dto.isCOD;
+    if (dto.deliveryPricing !== undefined) data.deliveryPricing = dto.deliveryPricing as Prisma.InputJsonValue;
     if (dto.status) data.status = dto.status;
     if (dto.status) {
       data.history = { create: { status: dto.status, note: dto.statusNote } };
@@ -136,7 +146,10 @@ export class AdminService {
       dto.deliveryFee !== undefined ||
       dto.adminNote !== undefined ||
       dto.deliveryFeeFinal !== undefined ||
-      dto.courierReference !== undefined
+      dto.courierReference !== undefined ||
+      dto.courierStatus !== undefined ||
+      dto.deliveryProvider !== undefined ||
+      dto.isCOD !== undefined
     ) {
       await this.eventLog.logEvent('order_admin_override', {
         orderId,
@@ -150,7 +163,11 @@ export class AdminService {
           deliveryFee: dto.deliveryFee ?? order.deliveryFee,
           deliveryFeeFinal: dto.deliveryFeeFinal ?? order.deliveryFeeFinal,
           adminNote: dto.adminNote ?? order.adminNote,
-          courierReference: dto.courierReference ?? order.courierReference
+          courierReference: dto.courierReference ?? order.courierReference,
+          courierStatus: dto.courierStatus ?? order.courierStatus,
+          deliveryProvider: dto.deliveryProvider ?? order.deliveryProvider,
+          deliverySettlementType: dto.deliverySettlementType ?? order.deliverySettlementType,
+          isCOD: dto.isCOD ?? order.isCOD
         }
       });
       await this.productEvents.track('admin_override', {
@@ -159,7 +176,9 @@ export class AdminService {
         metadata: {
           nextStatus: dto.status,
           totalPrice: dto.totalPrice,
-          deliveryFee: dto.deliveryFee
+          deliveryFee: dto.deliveryFee,
+          courierStatus: dto.courierStatus,
+          isCOD: dto.isCOD
         }
       });
     }
@@ -216,8 +235,11 @@ export class AdminService {
       inRange,
       paymentRequested,
       paymentPaid,
+      paymentFailed,
       histories,
-      recentOrders
+      recentOrders,
+      codOrders,
+      prepaidOrders
     ] = await Promise.all([
       this.prisma.order.count({ where: { createdAt: { gte: today } } }),
       this.prisma.order.count(),
@@ -228,14 +250,17 @@ export class AdminService {
       this.prisma.order.count({ where: { deliveryType: DeliveryType.IN_ZONE_INTERNAL } }),
       this.prisma.payment.count({ where: { status: PaymentStatus.PENDING } }),
       this.prisma.payment.count({ where: { status: PaymentStatus.PAID } }),
+      this.prisma.payment.count({ where: { status: PaymentStatus.FAILED } }),
       this.prisma.orderStatusHistory.findMany({
         where: { status: { in: [OrderStatus.PLACED, OrderStatus.VENDOR_ACCEPTED, OrderStatus.DELIVERED] } },
         orderBy: { changedAt: 'asc' }
       }),
       this.prisma.order.findMany({
         where: { createdAt: { gte: since } },
-        select: { createdAt: true, status: true, deliveryType: true }
-      })
+        select: { createdAt: true, status: true, deliveryType: true, isCOD: true }
+      }),
+      this.prisma.order.count({ where: { isCOD: true, createdAt: { gte: since } } }),
+      this.prisma.order.count({ where: { isCOD: false, createdAt: { gte: since } } })
     ]);
 
     const vendorNames = await this.prisma.vendor.findMany({ select: { id: true, name: true } });
@@ -287,8 +312,11 @@ export class AdminService {
     const placed = recentOrders.filter((order) => order.status !== OrderStatus.CANCELLED && order.status !== OrderStatus.VENDOR_REJECTED)
       .length;
 
+    const ordersThisWeek = recentOrders.length;
+
     return {
       dailyOrders,
+      ordersThisWeek,
       totalSales: Number(verifiedPayments._sum.amount ?? 0),
       cancelRate: totalOrders ? cancelledOrders / totalOrders : 0,
       acceptanceRate: placed ? accepted / placed : 0,
@@ -304,8 +332,11 @@ export class AdminService {
         outOfZonePercent: inRange + outOfRange ? outOfRange / (inRange + outOfRange) : 0
       },
       paymentConversion: paymentRequested ? paymentPaid / paymentRequested : 0,
+      paymentSuccessRate: paymentPaid + paymentFailed > 0 ? paymentPaid / (paymentPaid + paymentFailed) : 0,
       averageSecondsToAccept: acceptanceCount ? acceptanceTotal / acceptanceCount : 0,
       averageSecondsToComplete: completionCount ? completionTotal / completionCount : 0,
+      averageFulfillmentSeconds: completionCount ? completionTotal / completionCount : 0,
+      codRatio: codOrders + prepaidOrders > 0 ? codOrders / (codOrders + prepaidOrders) : 0,
       ordersPerDay
     };
   }
@@ -346,8 +377,54 @@ export class AdminService {
     };
   }
 
-  eventLog() {
-    return this.prisma.eventLog.findMany({ orderBy: { createdAt: 'desc' }, take: 100 });
+  async eventLog(query: EventQueryDto, res?: Response) {
+    const where: Prisma.EventLogWhereInput = {
+      eventName: query.eventName ? { contains: query.eventName, mode: 'insensitive' } : undefined,
+      actorType: query.actorType,
+      orderId: query.orderId,
+      userId: query.userId,
+      vendorId: query.vendorId,
+      createdAt:
+        query.from || query.to
+          ? {
+              gte: query.from,
+              lte: query.to
+            }
+          : undefined
+    };
+
+    const events = await this.prisma.eventLog.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: query.limit ?? 100
+    });
+
+    if (query.format === 'csv' && res) {
+      const header = 'createdAt,eventName,actorType,actorId,orderId,userId,vendorId,metadata\n';
+      const rows = events
+        .map((e) =>
+          [
+            e.createdAt.toISOString(),
+            e.eventName,
+            e.actorType ?? '',
+            e.actorId ?? '',
+            e.orderId ?? '',
+            e.userId ?? '',
+            e.vendorId ?? '',
+            JSON.stringify(e.metadata ?? {})
+          ]
+            .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+            .join(',')
+        )
+        .join('\n');
+      const csv = `${header}${rows}`;
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="events.csv"');
+      res.send(csv);
+      return;
+    }
+
+    return events;
   }
 
   private async ensureVendorExists(vendorId: string) {

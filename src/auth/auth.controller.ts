@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Post, Req, Res, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { RequestOtpDto } from './dto/request-otp.dto';
@@ -29,21 +30,25 @@ export class AuthController {
   }
 
   @Post('request-otp')
+  @Throttle(3, 60)
   requestOtp(@Body() dto: RequestOtpDto) {
     return this.auth.requestOtp(dto.mobile);
   }
 
   @Post('admin/request-otp')
+  @Throttle(3, 60)
   requestAdminOtp(@Body() dto: RequestOtpDto) {
     return this.auth.requestAdminOtp(dto.mobile);
   }
 
   @Post('verify-otp')
+  @Throttle(6, 60)
   verifyOtp(@Body() dto: VerifyOtpDto) {
     return this.auth.verifyOtp(dto.mobile, dto.code);
   }
 
   @Post('web/verify-otp')
+  @Throttle(6, 60)
   async verifyOtpForWeb(@Body() dto: VerifyOtpDto, @Res({ passthrough: true }) res: Response) {
     const tokens = await this.auth.verifyOtp(dto.mobile, dto.code);
     this.setCustomerCookies(res, tokens);

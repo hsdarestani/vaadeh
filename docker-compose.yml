@@ -1,20 +1,21 @@
 version: '3.9'
 
 services:
-  app:
+  api:
     build: .
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vaadeh?schema=public
-      REDIS_URL: redis://redis:6379
+      PORT: 3000
       NODE_ENV: production
-    ports:
-      - '3000:3000'
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-vaadeh}?schema=public}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     depends_on:
-      - postgres
-      - redis
-    command: sh -c "npm run build && npm run start:prod"
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: sh -c "npx prisma migrate deploy && npm run build && npm run start:prod"
     restart: unless-stopped
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/api/health || exit 1']
@@ -23,72 +24,62 @@ services:
       retries: 5
 
   admin-ui:
-    build: ./admin-ui
+    build:
+      context: ./admin-ui
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-https://api.${DOMAIN}/api}
     env_file:
       - .env
     environment:
-      NEXT_PUBLIC_API_BASE: http://nginx/api
-    ports:
-      - '3001:3000'
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-https://api.${DOMAIN}/api}
     depends_on:
-      - app
+      api:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000 || exit 1']
-      interval: 30s
-      timeout: 5s
-      retries: 5
-
-  nginx:
-    image: nginx:1.25-alpine
-    volumes:
-      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
-    ports:
-      - '80:80'
-    depends_on:
-      - app
-      - admin-ui
-      - customer-ui
-    restart: unless-stopped
-
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: vaadeh
-    ports:
-      - '5432:5432'
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      test: ['CMD-SHELL', 'wget --no-check-certificate -qO- http://localhost:3000 || exit 1']
       interval: 30s
       timeout: 5s
       retries: 5
 
   customer-ui:
-    build: ./customer-ui
+    build:
+      context: ./customer-ui
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-https://api.${DOMAIN}/api}
     env_file:
       - .env
     environment:
-      NEXT_PUBLIC_API_BASE: http://nginx/api
-    ports:
-      - '3002:3000'
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-https://api.${DOMAIN}/api}
     depends_on:
-      - app
+      api:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000 || exit 1']
+      test: ['CMD-SHELL', 'wget --no-check-certificate -qO- http://localhost:3000 || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-vaadeh}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres}']
       interval: 30s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7-alpine
-    ports:
-      - '6379:6379'
     restart: unless-stopped
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
@@ -96,5 +87,63 @@ services:
       timeout: 5s
       retries: 5
 
+  certbot-init:
+    image: certbot/certbot:latest
+    env_file:
+      - .env
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot_challenges:/var/www/certbot
+    ports:
+      - '80:80'
+    command: >-
+      sh -c "if [ ! -f /etc/letsencrypt/live/${DOMAIN}/fullchain.pem ]; then certbot certonly --standalone --non-interactive --agree-tos --email ${LETSENCRYPT_EMAIL} -d ${DOMAIN} -d www.${DOMAIN} -d api.${DOMAIN} -d app.${DOMAIN} -d admin.${DOMAIN}; fi"
+    restart: 'no'
+
+  certbot:
+    image: certbot/certbot:latest
+    env_file:
+      - .env
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot_challenges:/var/www/certbot
+    depends_on:
+      nginx:
+        condition: service_started
+    entrypoint: >-
+      sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $!; done"
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.25-alpine
+    env_file:
+      - .env
+    volumes:
+      - ./deploy/nginx.conf.template:/etc/nginx/templates/nginx.conf.template:ro
+      - ./deploy/landing:/usr/share/nginx/html
+      - letsencrypt:/etc/letsencrypt
+      - certbot_challenges:/var/www/certbot
+    ports:
+      - '80:80'
+      - '443:443'
+    depends_on:
+      certbot-init:
+        condition: service_completed_successfully
+      api:
+        condition: service_healthy
+      admin-ui:
+        condition: service_healthy
+      customer-ui:
+        condition: service_healthy
+    command: /bin/sh -c "envsubst '$$DOMAIN' < /etc/nginx/templates/nginx.conf.template > /etc/nginx/nginx.conf && envsubst '$$DOMAIN' < /usr/share/nginx/html/index.html > /usr/share/nginx/html/index.rendered && mv /usr/share/nginx/html/index.rendered /usr/share/nginx/html/index.html && nginx -g 'daemon off;'"
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost/_nginx_health || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres_data: {}
+  letsencrypt: {}
+  certbot_challenges: {}
