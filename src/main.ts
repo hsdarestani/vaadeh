@@ -1,6 +1,9 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { config } from 'dotenv';
+import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
+import cors from 'cors';
 import { AppModule } from './app.module';
 import { WinstonLogger } from './logger/winston-logger.service';
 import { RequestLoggerMiddleware } from './logger/request-logger.middleware';
@@ -13,6 +16,22 @@ async function bootstrap(): Promise<void> {
   const logger = new WinstonLogger();
   const app = await NestFactory.create(AppModule, { logger });
   app.enableShutdownHooks();
+
+  app.use(
+    helmet({
+      crossOriginEmbedderPolicy: false,
+      contentSecurityPolicy: false
+    })
+  );
+
+  app.use(
+    cors({
+      origin: process.env.ALLOWED_ORIGINS?.split(',') ?? '*',
+      credentials: true
+    })
+  );
+
+  app.use(cookieParser());
 
   const requestLogger = new RequestLoggerMiddleware(logger);
   app.use(requestLogger.use.bind(requestLogger));

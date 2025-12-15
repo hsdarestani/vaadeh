@@ -11,6 +11,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { AdminModule } from './admin/admin.module';
+import { MenuModule } from './menu/menu.module';
 import { ContextLoggerInterceptor } from './logger/context-logger.interceptor';
 
 @Module({
@@ -23,7 +24,8 @@ import { ContextLoggerInterceptor } from './logger/context-logger.interceptor';
     PaymentsModule,
     TelegramModule,
     NotificationsModule,
-    AdminModule
+    AdminModule,
+    MenuModule
   ],
   controllers: [AppController],
   providers: [

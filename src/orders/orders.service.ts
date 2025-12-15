@@ -88,7 +88,7 @@ export class OrdersService {
     const initialPaymentStatus = isPostpaidDelivery ? PaymentStatus.NONE : PaymentStatus.PENDING;
     const initialNote =
       matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
-        ? 'برچسب اسنپ (پس‌کرایه) به دلیل خارج از محدوده'
+        ? 'برچسب اسنپ (پس‌کرایه) به دلیل خارج از محدوده - نیازمند تایید اپراتور'
         : 'در محدوده ارسال داخلی';
     const paymentNote = isPostpaidDelivery
       ? 'پرداخت پیک/سفارش در مقصد توسط مشتری (تعهد پس‌کرایه)'
@@ -119,6 +119,10 @@ export class OrdersService {
           status: initialStatus,
           paymentStatus: initialPaymentStatus,
           deliverySettlementType: isPostpaidDelivery ? 'POSTPAID' : undefined,
+          snappStatus:
+            matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
+              ? 'PENDING_ADMIN_REVIEW'
+              : undefined,
           items: {
             create: dto.items.map((item) => {
               const variant = variants.find((v) => v.id === item.menuVariantId) as (typeof variants)[0];
@@ -148,6 +152,18 @@ export class OrdersService {
       vendorId: vendor.id,
       actorType: EventActorType.USER,
       metadata: { deliveryType: matching.deliveryType, deliveryFee: matching.deliveryFee }
+    });
+    await this.productEvents.track('order_created', {
+      actorType: EventActorType.USER,
+      actorId: userId,
+      orderId: order.id,
+      metadata: { deliveryType: matching.deliveryType }
+    });
+    await this.productEvents.track('vendor_assigned', {
+      actorType: EventActorType.SYSTEM,
+      actorId: vendor.id,
+      orderId: order.id,
+      metadata: { deliveryType: matching.deliveryType }
     });
     if (matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE) {
       await this.eventLog.logEvent('OUT_OF_ZONE_SELECTED', {
@@ -215,23 +231,35 @@ export class OrdersService {
       });
 
     if (next === OrderStatus.VENDOR_ACCEPTED) {
-        await this.notifications.onVendorAccepted(orderId);
-        await this.eventLog.logEvent('VENDOR_ACCEPTED', {
-          orderId,
-          vendorId: order.vendorId,
-          userId: order.userId,
-          actorType: EventActorType.VENDOR
-        });
-      }
+      await this.notifications.onVendorAccepted(orderId);
+      await this.eventLog.logEvent('VENDOR_ACCEPTED', {
+        orderId,
+        vendorId: order.vendorId,
+        userId: order.userId,
+        actorType: EventActorType.VENDOR
+      });
+      await this.productEvents.track('vendor_accepted', {
+        actorType: EventActorType.VENDOR,
+        actorId: order.vendorId,
+        orderId,
+        metadata: { previousStatus: order.status }
+      });
+    }
     if (next === OrderStatus.VENDOR_REJECTED) {
-        await this.notifications.onVendorRejected(orderId);
-        await this.eventLog.logEvent('VENDOR_REJECTED', {
-          orderId,
-          vendorId: order.vendorId,
-          userId: order.userId,
-          actorType: EventActorType.VENDOR
-        });
-      }
+      await this.notifications.onVendorRejected(orderId);
+      await this.eventLog.logEvent('VENDOR_REJECTED', {
+        orderId,
+        vendorId: order.vendorId,
+        userId: order.userId,
+        actorType: EventActorType.VENDOR
+      });
+      await this.productEvents.track('canceled', {
+        actorType: EventActorType.VENDOR,
+        actorId: order.vendorId,
+        orderId,
+        metadata: { reason: 'vendor_rejected' }
+      });
+    }
     if (
       [OrderStatus.READY, OrderStatus.COURIER_ASSIGNED, OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED].includes(
         next
@@ -240,14 +268,36 @@ export class OrdersService {
       await this.notifications.onDelivery(orderId, next);
     }
 
-      if (next === OrderStatus.DELIVERED) {
-        await this.eventLog.logEvent('DELIVERED', {
-          orderId,
-          vendorId: order.vendorId,
-          userId: order.userId,
-          actorType: EventActorType.SYSTEM
-        });
-      }
+    if (next === OrderStatus.OUT_FOR_DELIVERY) {
+      await this.productEvents.track('out_for_delivery', {
+        actorType: EventActorType.SYSTEM,
+        actorId: order.vendorId,
+        orderId
+      });
+    }
+
+    if (next === OrderStatus.DELIVERED) {
+      await this.eventLog.logEvent('DELIVERED', {
+        orderId,
+        vendorId: order.vendorId,
+        userId: order.userId,
+        actorType: EventActorType.SYSTEM
+      });
+      await this.productEvents.track('delivered', {
+        actorType: EventActorType.SYSTEM,
+        actorId: order.vendorId,
+        orderId
+      });
+    }
+
+    if (next === OrderStatus.CANCELLED) {
+      await this.productEvents.track('canceled', {
+        actorType: EventActorType.SYSTEM,
+        actorId: order.userId,
+        orderId,
+        metadata: { from: order.status }
+      });
+    }
 
     return updated;
   }

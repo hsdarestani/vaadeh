@@ -31,9 +31,15 @@ export class VendorBotService implements OnModuleInit {
       return;
     }
 
-    this.bot = new TelegramBot(token, { polling: true });
+    const useWebhook = Boolean(process.env.TELEGRAM_WEBHOOK_SECRET);
+    this.bot = new TelegramBot(token, { polling: !useWebhook });
     this.registerHandlers();
     this.logger.log('Vendor bot initialized');
+  }
+
+  handleWebhook(update: TelegramBot.Update) {
+    if (!this.bot) return;
+    this.bot.processUpdate(update);
   }
 
   private registerHandlers() {

@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import {
   EventActorType,
   OrderStatus,
@@ -8,11 +8,13 @@ import {
   Prisma
 } from '@prisma/client';
 import axios from 'axios';
+import crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationOrchestrator } from '../notifications/notification.orchestrator';
 import { EventLogService } from '../event-log/event-log.service';
 import { ProductEventService } from '../event-log/product-event.service';
 import { RateLimitService } from '../middleware/rate-limit.service';
+import { RedisService } from '../redis/redis.service';
 
 interface ZibalRequestResponse {
   result: number;
@@ -38,7 +40,8 @@ export class PaymentsService {
     private readonly notifications: NotificationOrchestrator,
     private readonly eventLog: EventLogService,
     private readonly productEvents: ProductEventService,
-    private readonly rateLimit: RateLimitService
+    private readonly rateLimit: RateLimitService,
+    private readonly redis: RedisService
   ) {
     this.merchantId = process.env.ZIBAL_MERCHANT ?? process.env.ZIBAL_MERCHANT_ID ?? '';
     if (!this.merchantId) {
@@ -48,6 +51,36 @@ export class PaymentsService {
 
   private requireMerchant() {
     return this.merchantId;
+  }
+
+  private validateSignature(payload: Record<string, any>, headers?: Record<string, string>) {
+    const secret = process.env.ZIBAL_CALLBACK_SECRET;
+    const signatureHeader = headers?.['x-zibal-signature'] ?? headers?.['X-Zibal-Signature'];
+    const timestamp = headers?.['x-zibal-timestamp'] ?? headers?.['X-Zibal-Timestamp'];
+    const body = JSON.stringify(payload ?? {});
+    if (!secret) return true;
+    if (!signatureHeader) throw new UnauthorizedException('missing signature');
+    if (timestamp) {
+      const skew = Math.abs(Date.now() - Number(timestamp));
+      if (Number.isFinite(skew) && skew > 5 * 60 * 1000) {
+        throw new UnauthorizedException('stale callback');
+      }
+    }
+    const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
+    if (expected !== signatureHeader) {
+      throw new UnauthorizedException('invalid signature');
+    }
+    return true;
+  }
+
+  private async guardReplay(trackId: string, signature?: string) {
+    const client = this.redis.getClient();
+    const key = `zibal:cb:${trackId}:${signature ?? 'none'}`;
+    const existing = await client.get(key);
+    if (existing) {
+      throw new BadRequestException('duplicate callback');
+    }
+    await client.set(key, '1', 'PX', 10 * 60 * 1000);
   }
 
   private async markPaymentFailed(
@@ -170,6 +203,12 @@ export class PaymentsService {
       return persisted;
       });
 
+      await this.productEvents.track('payment_initiated', {
+        actorType: EventActorType.USER,
+        actorId: userId,
+        orderId,
+        metadata: { provider: 'ZIBAL', trackId: effectiveTrackId }
+      });
       await this.productEvents.track('payment_requested', {
         actorType: EventActorType.USER,
         actorId: userId,
@@ -186,7 +225,16 @@ export class PaymentsService {
       return { payment, payLink: responseData?.payLink };
     }
 
-  async verifyZibal(trackId: string, rawPayload?: any) {
+  async verifyZibal(
+    trackId: string,
+    rawPayload?: any,
+    headers?: Record<string, string>,
+    skipReplayGuard = false
+  ) {
+    this.validateSignature(rawPayload ?? {}, headers);
+    if (!skipReplayGuard) {
+      await this.guardReplay(trackId, headers?.['x-zibal-signature']);
+    }
     this.rateLimit.assertWithinLimit(`payment-verify:${trackId}`, 10, 10 * 60 * 1000);
     const payment = await this.prisma.payment.findFirst({ where: { trackId }, include: { order: true } });
     if (!payment) {
@@ -275,6 +323,12 @@ export class PaymentsService {
         actorType: EventActorType.USER,
         metadata: { trackId }
       });
+      await this.productEvents.track('payment_verified', {
+        actorType: EventActorType.USER,
+        actorId: payment.userId ?? payment.order?.userId ?? undefined,
+        orderId: payment.orderId,
+        metadata: { provider: 'ZIBAL', trackId }
+      });
       await this.productEvents.track('payment_paid', {
         actorType: EventActorType.USER,
         actorId: payment.userId ?? payment.order?.userId ?? undefined,
@@ -294,12 +348,14 @@ export class PaymentsService {
     return { payment: result.payment, orderStatus: result.payment.order?.status, success };
   }
 
-  async handleZibalCallback(payload: Record<string, any>) {
+  async handleZibalCallback(payload: Record<string, any>, headers?: Record<string, string>) {
     const trackId = payload.trackId ?? payload.trackid ?? payload.trackID;
     if (!trackId) {
       throw new BadRequestException('trackId is required');
     }
 
+    this.validateSignature(payload, headers);
+    await this.guardReplay(trackId, headers?.['x-zibal-signature']);
     this.rateLimit.assertWithinLimit(`payment-callback:${trackId}`, 20, 60 * 60 * 1000);
 
     const payment = await this.prisma.payment.findFirst({ where: { trackId }, include: { order: true } });
@@ -349,6 +405,6 @@ export class PaymentsService {
       return { paymentStatus: PaymentStatus.FAILED };
     }
 
-    return this.verifyZibal(trackId, payload);
+    return this.verifyZibal(trackId, payload, headers, true);
   }
 }

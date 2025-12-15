@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import TelegramBot from 'node-telegram-bot-api';
-import { NotificationChannel, NotificationStatus } from '@prisma/client';
+import { EventActorType, NotificationChannel, NotificationStatus } from '@prisma/client';
 import axios, { AxiosInstance } from 'axios';
 import { Queue, Worker } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
+import { ProductEventService } from '../event-log/product-event.service';
 
 @Injectable()
 export class NotificationService {
@@ -15,7 +16,7 @@ export class NotificationService {
   private dispatcherWorker?: Worker;
   private httpClient: AxiosInstance;
 
-  constructor(private readonly prisma: PrismaService) {
+  constructor(private readonly prisma: PrismaService, private readonly productEvents: ProductEventService) {
     const customerToken = process.env.TELEGRAM_CUSTOMER_BOT_TOKEN;
     if (customerToken) {
       this.customerTelegramBot = new TelegramBot(customerToken, { polling: false });
@@ -51,6 +52,28 @@ export class NotificationService {
         status: NotificationStatus.PENDING
       }
     });
+  }
+
+  private async trackEvent(
+    eventName: 'sms_sent' | 'sms_failed' | 'telegram_sent' | 'telegram_failed',
+    payload: { userId?: string; vendorId?: string; orderId?: string }
+  ) {
+    await this.productEvents.track(eventName, {
+      actorType: payload.vendorId ? EventActorType.VENDOR : EventActorType.USER,
+      actorId: payload.vendorId ?? payload.userId,
+      orderId: payload.orderId,
+      metadata: {}
+    });
+  }
+
+  async queueMetrics() {
+    const dispatcherCounts = this.dispatcherQueue
+      ? await this.dispatcherQueue.getJobCounts('waiting', 'active', 'delayed', 'failed', 'completed')
+      : null;
+    const deadLetterCounts = this.deadLetterQueue
+      ? await this.deadLetterQueue.getJobCounts('waiting', 'failed', 'completed')
+      : null;
+    return { dispatcherCounts, deadLetterCounts };
   }
 
   private async sendTelegramDirect(
@@ -209,6 +232,7 @@ export class NotificationService {
         where: { id: log.id },
         data: { status: NotificationStatus.SENT, attempts: 1, providerMessageId: result.providerMessageId, providerStatus: result.providerStatus }
       });
+      await this.trackEvent('telegram_sent', { userId: opts.userId, vendorId: opts.vendorId, orderId: opts.orderId });
     };
 
     if (!this.dispatcherQueue) {
@@ -252,6 +276,11 @@ export class NotificationService {
           providerMessageId: result.providerMessageId,
           providerStatus: result.providerStatus
         }
+      });
+      await this.trackEvent(result.error ? 'sms_failed' : 'sms_sent', {
+        userId: meta?.userId,
+        vendorId: meta?.vendorId,
+        orderId: meta?.orderId
       });
     };
 

@@ -15,7 +15,7 @@ import { UpdateUserDto } from './dto/update-user.dto';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.ADMIN)
+@Roles(UserRole.ADMIN, UserRole.OPERATOR)
 export class AdminController {
   constructor(private readonly admin: AdminService) {}
 
@@ -25,31 +25,37 @@ export class AdminController {
   }
 
   @Post('vendors')
+  @Roles(UserRole.ADMIN)
   createVendor(@Body() dto: CreateVendorDto) {
     return this.admin.createVendor(dto);
   }
 
   @Patch('vendors/:id')
+  @Roles(UserRole.ADMIN)
   updateVendor(@Param('id') id: string, @Body() dto: UpdateVendorDto) {
     return this.admin.updateVendor(id, dto);
   }
 
   @Post('vendors/:vendorId/menu-items')
+  @Roles(UserRole.ADMIN)
   createMenuItem(@Param('vendorId') vendorId: string, @Body() dto: CreateMenuItemDto) {
     return this.admin.createMenuItem(vendorId, dto);
   }
 
   @Patch('menu-items/:id')
+  @Roles(UserRole.ADMIN)
   updateMenuItem(@Param('id') id: string, @Body() dto: UpdateMenuItemDto) {
     return this.admin.updateMenuItem(id, dto);
   }
 
   @Post('menu-items/:menuItemId/variants')
+  @Roles(UserRole.ADMIN)
   createMenuVariant(@Param('menuItemId') menuItemId: string, @Body() dto: CreateMenuVariantDto) {
     return this.admin.createMenuVariant(menuItemId, dto);
   }
 
   @Patch('menu-variants/:id')
+  @Roles(UserRole.ADMIN)
   updateMenuVariant(@Param('id') id: string, @Body() dto: UpdateMenuVariantDto) {
     return this.admin.updateMenuVariant(id, dto);
   }
@@ -60,6 +66,7 @@ export class AdminController {
   }
 
   @Patch('orders/:id')
+  @Roles(UserRole.ADMIN)
   updateOrder(@Param('id') id: string, @Body() dto: UpdateOrderDto) {
     return this.admin.updateOrder(id, dto);
   }
@@ -75,6 +82,7 @@ export class AdminController {
   }
 
   @Patch('users/:id')
+  @Roles(UserRole.ADMIN)
   updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto) {
     return this.admin.updateUser(id, dto);
   }
@@ -92,6 +100,16 @@ export class AdminController {
   @Get('notifications')
   notificationLog() {
     return this.admin.notificationLog();
+  }
+
+  @Get('notifications/health')
+  notificationHealth() {
+    return this.admin.notificationHealth();
+  }
+
+  @Get('funnel')
+  funnel() {
+    return this.admin.funnel();
   }
 
   @Get('events')

@@ -108,6 +108,8 @@ model Order {
   locationLng     Float
   status          OrderStatus         @default(DRAFT)
   paymentStatus   PaymentStatus       @default(PENDING)
+  snappRequestId  String?
+  snappStatus     SnappRequestStatus?
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   vendor  Vendor  @relation(fields: [vendorId], references: [id], onDelete: Cascade)
@@ -213,6 +215,14 @@ enum PaymentAttemptType {
   VERIFY
 }
 
+enum SnappRequestStatus {
+  PENDING_ADMIN_REVIEW
+  REQUESTED
+  CONFIRMED
+  FAILED
+  CANCELLED
+}
+
 enum NotificationChannel {
   TELEGRAM
   SMS
@@ -243,6 +253,7 @@ model ProductEvent {
 
 enum UserRole {
   ADMIN
+  OPERATOR
   CUSTOMER
 }
 

@@ -6,9 +6,11 @@ import { AddressesModule } from '../addresses/addresses.module';
 import { AuthModule } from '../auth/auth.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { PrismaModule } from '../prisma/prisma.module';
+import { TelegramController } from './telegram.controller';
 
 @Module({
   imports: [OrdersModule, AddressesModule, AuthModule, PaymentsModule, PrismaModule],
-  providers: [CustomerBotService, VendorBotService]
+  providers: [CustomerBotService, VendorBotService],
+  controllers: [TelegramController]
 })
 export class TelegramModule {}

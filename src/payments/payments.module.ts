@@ -6,9 +6,10 @@ import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
 import { EventLogModule } from '../event-log/event-log.module';
 import { RateLimitService } from '../middleware/rate-limit.service';
+import { RedisModule } from '../redis/redis.module';
 
 @Module({
-  imports: [PrismaModule, OrdersModule, NotificationsModule, EventLogModule],
+  imports: [PrismaModule, OrdersModule, NotificationsModule, EventLogModule, RedisModule],
   controllers: [PaymentsController],
   providers: [PaymentsService, RateLimitService],
   exports: [PaymentsService]
