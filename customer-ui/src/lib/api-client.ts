@@ -41,6 +41,11 @@ export interface OrderSummary {
   status: string;
   paymentStatus: string;
   totalPrice: number;
+  deliveryFee: number;
+  deliveryFeeEstimated?: number | null;
+  deliveryProvider?: string;
+  deliveryType?: string;
+  isCOD?: boolean;
   createdAt: string;
   items?: OrderItemSummary[];
 }

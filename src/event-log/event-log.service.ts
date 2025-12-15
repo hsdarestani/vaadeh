@@ -9,6 +9,7 @@ export type EventPayload = {
   actorType?: Prisma.EventActorType;
   actorId?: string;
   correlationId?: string;
+  entityType?: 'order' | 'payment' | 'notification' | 'auth' | 'system';
   metadata?: Record<string, unknown>;
 };
 
@@ -33,7 +34,10 @@ export class EventLogService {
         actorType: derivedActorType,
         actorId: payload.actorId,
         correlationId: payload.correlationId,
-        metadata: (payload.metadata ?? {}) as Prisma.JsonObject,
+        metadata: {
+          entityType: payload.entityType ?? (payload.orderId ? 'order' : undefined),
+          ...payload.metadata
+        } as Prisma.JsonObject,
         orderId: payload.orderId,
         userId: payload.userId,
         vendorId: payload.vendorId

@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { DeliveryType, OrderStatus, Vendor } from '@prisma/client';
+import { CourierStatus, DeliveryProvider, DeliveryType, OrderStatus, Vendor } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 interface MatchInput {
@@ -10,8 +10,17 @@ interface MatchInput {
 interface VendorMatchResult {
   vendor: Vendor;
   deliveryType: DeliveryType;
+  deliveryProvider: DeliveryProvider;
   deliveryFee: number;
   distanceKm: number;
+  courierStatus: CourierStatus;
+  pricingBreakdown?: {
+    baseFee: number;
+    perKmRate: number;
+    peakMultiplier: number;
+    estimatedFee: number;
+    distanceKm: number;
+  };
 }
 
 @Injectable()
@@ -69,8 +78,24 @@ export class VendorMatchingService {
 
     const inRange = distanceKm <= input.vendor.serviceRadiusKm;
     const deliveryType = inRange ? DeliveryType.IN_ZONE_INTERNAL : DeliveryType.SNAPP_COURIER_OUT_OF_ZONE;
-    const deliveryFee = inRange ? Number(process.env.INTERNAL_DELIVERY_FEE ?? 0) : 0;
+    const deliveryProvider = inRange ? DeliveryProvider.INTERNAL : DeliveryProvider.SNAPP;
 
-    return { vendor: input.vendor, deliveryType, deliveryFee, distanceKm };
+    const baseFee = Number(process.env.SNAPP_BASE_FEE ?? 0);
+    const perKmRate = Number(process.env.SNAPP_PER_KM_FEE ?? 0);
+    const peakMultiplier = Number(process.env.SNAPP_PEAK_MULTIPLIER ?? 1);
+
+    const deliveryFee = inRange ? Number(process.env.INTERNAL_DELIVERY_FEE ?? 0) : Math.max(0, baseFee + distanceKm * perKmRate * peakMultiplier);
+
+    return {
+      vendor: input.vendor,
+      deliveryType,
+      deliveryProvider,
+      deliveryFee,
+      distanceKm,
+      courierStatus: inRange ? CourierStatus.PENDING : CourierStatus.REQUESTED,
+      pricingBreakdown: inRange
+        ? undefined
+        : { baseFee, perKmRate, peakMultiplier, estimatedFee: deliveryFee, distanceKm }
+    };
   }
 }

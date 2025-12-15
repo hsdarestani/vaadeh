@@ -1,5 +1,14 @@
 import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
-import { DeliveryType, EventActorType, OrderStatus, PaymentStatus, Prisma } from '@prisma/client';
+import {
+  CourierStatus,
+  DeliveryProvider,
+  DeliverySettlementType,
+  DeliveryType,
+  EventActorType,
+  OrderStatus,
+  PaymentStatus,
+  Prisma
+} from '@prisma/client';
 import { AddressesService } from '../addresses/addresses.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationOrchestrator } from '../notifications/notification.orchestrator';
@@ -81,18 +90,22 @@ export class OrdersService {
       return sum + Number(variant.price) * qty;
     }, 0);
 
+    const requiresCodConfirmation = matching.deliveryProvider === DeliveryProvider.SNAPP;
+    if (requiresCodConfirmation && !dto.payAtDelivery) {
+      throw new BadRequestException('برای ارسال با پیک اسنپ تایید پرداخت در مقصد الزامی است.');
+    }
+
+    const isCOD = Boolean(dto.payAtDelivery) || matching.deliveryProvider === DeliveryProvider.SNAPP;
+
     const totalPrice = subtotal + matching.deliveryFee;
 
     const initialStatus = OrderStatus.PLACED;
-    const isPostpaidDelivery = dto.payAtDelivery || matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE;
-    const initialPaymentStatus = isPostpaidDelivery ? PaymentStatus.NONE : PaymentStatus.PENDING;
+    const initialPaymentStatus = isCOD ? PaymentStatus.NONE : PaymentStatus.PENDING;
     const initialNote =
       matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
         ? 'برچسب اسنپ (پس‌کرایه) به دلیل خارج از محدوده - نیازمند تایید اپراتور'
         : 'در محدوده ارسال داخلی';
-    const paymentNote = isPostpaidDelivery
-      ? 'پرداخت پیک/سفارش در مقصد توسط مشتری (تعهد پس‌کرایه)'
-      : 'پرداخت آنلاین مورد انتظار';
+    const paymentNote = isCOD ? 'پرداخت پیک/سفارش در مقصد توسط مشتری (تعهد پس‌کرایه)' : 'پرداخت آنلاین مورد انتظار';
 
     const order = await this.prisma.$transaction(async (tx) => {
       const created = await tx.order.create({
@@ -106,11 +119,14 @@ export class OrdersService {
             fullAddress: chosenAddress.fullAddress
           },
           deliveryType: matching.deliveryType,
+          deliveryProvider: matching.deliveryProvider,
           deliveryFee: new Prisma.Decimal(matching.deliveryFee),
           deliveryFeeEstimated:
             matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
               ? new Prisma.Decimal(matching.deliveryFee)
               : undefined,
+          deliveryPricing: matching.pricingBreakdown,
+          courierStatus: matching.courierStatus ?? CourierStatus.PENDING,
           totalPrice: new Prisma.Decimal(totalPrice),
           customerNote: dto.customerNote,
           scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
@@ -118,7 +134,8 @@ export class OrdersService {
           locationLng,
           status: initialStatus,
           paymentStatus: initialPaymentStatus,
-          deliverySettlementType: isPostpaidDelivery ? 'POSTPAID' : undefined,
+          isCOD,
+          deliverySettlementType: isCOD ? DeliverySettlementType.POSTPAID : undefined,
           snappStatus:
             matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
               ? 'PENDING_ADMIN_REVIEW'
@@ -146,24 +163,37 @@ export class OrdersService {
     });
 
     await this.notifications.onOrderCreated(order.id);
+    await this.eventLog.logEvent('VENDOR_ASSIGNED', {
+      orderId: order.id,
+      userId,
+      vendorId: vendor.id,
+      actorType: EventActorType.SYSTEM,
+      metadata: { deliveryProvider: matching.deliveryProvider, distanceKm: matching.distanceKm }
+    });
     await this.eventLog.logEvent('ORDER_PLACED', {
       orderId: order.id,
       userId,
       vendorId: vendor.id,
       actorType: EventActorType.USER,
-      metadata: { deliveryType: matching.deliveryType, deliveryFee: matching.deliveryFee }
+      metadata: {
+        deliveryType: matching.deliveryType,
+        deliveryProvider: matching.deliveryProvider,
+        deliveryFee: matching.deliveryFee,
+        isCOD,
+        deliveryPricing: matching.pricingBreakdown
+      }
     });
     await this.productEvents.track('order_created', {
       actorType: EventActorType.USER,
       actorId: userId,
       orderId: order.id,
-      metadata: { deliveryType: matching.deliveryType }
+      metadata: { deliveryType: matching.deliveryType, deliveryProvider: matching.deliveryProvider, isCOD }
     });
     await this.productEvents.track('vendor_assigned', {
       actorType: EventActorType.SYSTEM,
       actorId: vendor.id,
       orderId: order.id,
-      metadata: { deliveryType: matching.deliveryType }
+      metadata: { deliveryType: matching.deliveryType, deliveryProvider: matching.deliveryProvider }
     });
     if (matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE) {
       await this.eventLog.logEvent('OUT_OF_ZONE_SELECTED', {

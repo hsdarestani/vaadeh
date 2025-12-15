@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import { IsEnum, IsNumber, IsOptional, IsString } from 'class-validator';
-import { OrderStatus } from '@prisma/client';
+import { CourierStatus, DeliveryProvider, DeliverySettlementType, OrderStatus } from '@prisma/client';
 
 export class UpdateOrderDto {
   @IsOptional()
@@ -33,4 +33,22 @@ export class UpdateOrderDto {
   @Type(() => Number)
   @IsNumber()
   deliveryFeeFinal?: number;
+
+  @IsOptional()
+  @IsEnum(CourierStatus)
+  courierStatus?: CourierStatus;
+
+  @IsOptional()
+  @IsEnum(DeliveryProvider)
+  deliveryProvider?: DeliveryProvider;
+
+  @IsOptional()
+  @IsEnum(DeliverySettlementType)
+  deliverySettlementType?: DeliverySettlementType;
+
+  @IsOptional()
+  isCOD?: boolean;
+
+  @IsOptional()
+  deliveryPricing?: Record<string, unknown>;
 }

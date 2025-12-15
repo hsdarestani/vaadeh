@@ -5,7 +5,7 @@ import DailyRotateFile from 'winston-daily-rotate-file';
 export class WinstonLogger implements LoggerService {
   private readonly logger: Logger;
 
-  constructor(level: LogLevel = 'debug') {
+  constructor(level: LogLevel = (process.env.LOG_LEVEL as LogLevel) ?? 'debug') {
     const logFormat = format.combine(format.timestamp(), format.errors({ stack: true }), format.json());
 
     this.logger = createLogger({
@@ -19,7 +19,7 @@ export class WinstonLogger implements LoggerService {
           datePattern: 'YYYY-MM-DD',
           zippedArchive: true,
           maxSize: '20m',
-          maxFiles: '14d',
+          maxFiles: process.env.LOG_RETENTION_DAYS ?? '60d',
           format: logFormat
         })
       ]

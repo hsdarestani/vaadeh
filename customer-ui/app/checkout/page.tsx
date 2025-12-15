@@ -12,6 +12,7 @@ export default function CheckoutPage() {
   const [addresses, setAddresses] = useState<Address[]>([]);
   const [addressId, setAddressId] = useState('');
   const [payAtDelivery, setPayAtDelivery] = useState(false);
+  const [codConfirmed, setCodConfirmed] = useState(false);
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -30,6 +31,9 @@ export default function CheckoutPage() {
     setLoading(true);
     setError('');
     try {
+      if (payAtDelivery && !codConfirmed) {
+        throw new Error('برای پرداخت در مقصد باید پس‌کرایه اسنپ را تایید کنید.');
+      }
       const order = await createOrder({
         addressId,
         items: items.map((i) => ({ menuVariantId: i.menuVariantId, qty: i.qty })),
@@ -37,7 +41,7 @@ export default function CheckoutPage() {
         payAtDelivery
       });
       clear();
-      if (!payAtDelivery) {
+      if (!payAtDelivery && !order.isCOD) {
         const payment = await requestPayment(order.id);
         if (payment.payLink) {
           window.location.href = payment.payLink;
@@ -108,10 +112,23 @@ export default function CheckoutPage() {
               <input
                 type="checkbox"
                 checked={payAtDelivery}
-                onChange={(e) => setPayAtDelivery(e.target.checked)}
+                onChange={(e) => {
+                  setPayAtDelivery(e.target.checked);
+                  setCodConfirmed(false);
+                }}
               />
-              پرداخت در مقصد
+              ارسال با پیک اسنپ / پرداخت در مقصد
             </label>
+            {payAtDelivery && (
+              <label className="flex items-center gap-2 text-xs text-amber-200 bg-amber-900/20 p-3 rounded">
+                <input
+                  type="checkbox"
+                  checked={codConfirmed}
+                  onChange={(e) => setCodConfirmed(e.target.checked)}
+                />
+                تایید می‌کنم هزینه ارسال با پیک اسنپ به صورت پس‌کرایه توسط من پرداخت می‌شود.
+              </label>
+            )}
           </div>
 
           <div className="card p-5 space-y-3">
@@ -122,7 +139,7 @@ export default function CheckoutPage() {
             {error && <p className="text-sm text-rose-400">{error}</p>}
             <button
               className="btn-primary w-full"
-              disabled={!items.length || loading}
+              disabled={!items.length || loading || (payAtDelivery && !codConfirmed)}
               onClick={placeOrder}
             >
               {loading ? '...' : 'ثبت سفارش'}

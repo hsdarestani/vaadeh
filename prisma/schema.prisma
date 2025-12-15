@@ -95,13 +95,17 @@ model Order {
   vendorId        String
   addressSnapshot Json
   deliveryType    DeliveryType
+  deliveryProvider DeliveryProvider   @default(INTERNAL)
   deliverySettlementType DeliverySettlementType?
+  deliveryPricing Json?
   deliveryFeeEstimated Decimal? @db.Decimal(10, 2)
   deliveryFeeFinal     Decimal? @db.Decimal(10, 2)
   deliveryFee     Decimal             @db.Decimal(10, 2) @default(0)
+  isCOD           Boolean             @default(false)
   totalPrice      Decimal             @db.Decimal(10, 2)
   adminNote       String?
   courierReference String?
+  courierStatus   CourierStatus       @default(PENDING)
   customerNote    String?
   scheduledAt     DateTime?
   locationLat     Float
@@ -193,6 +197,11 @@ enum DeliveryType {
   SNAPP_COURIER_OUT_OF_ZONE
 }
 
+enum DeliveryProvider {
+  INTERNAL
+  SNAPP
+}
+
 enum PaymentStatus {
   NONE
   PENDING
@@ -203,6 +212,15 @@ enum PaymentStatus {
 
 enum DeliverySettlementType {
   POSTPAID
+}
+
+enum CourierStatus {
+  PENDING
+  REQUESTED
+  ASSIGNED
+  PICKED_UP
+  DELIVERED
+  CANCELLED
 }
 
 enum PaymentProvider {

@@ -7,23 +7,26 @@ export class RequestLoggerMiddleware implements NestMiddleware {
   constructor(private readonly logger: WinstonLogger) {}
 
   use(req: Request & { correlationId?: string }, res: Response, next: () => void) {
-    const correlationId = (req.headers['x-correlation-id'] as string | undefined) ?? randomUUID();
-    req.correlationId = correlationId;
-    res.setHeader('x-correlation-id', correlationId);
+    const requestId = (req.headers['x-request-id'] as string | undefined) ?? randomUUID();
+    req.correlationId = requestId;
+    res.setHeader('x-request-id', requestId);
 
     const startedAt = Date.now();
     this.logger.log('Incoming request', 'HTTP', {
-      correlationId,
+      requestId,
       method: req.method,
-      path: req.originalUrl
+      path: req.originalUrl,
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
     });
 
     res.on('finish', () => {
       const durationMs = Date.now() - startedAt;
       this.logger.log('Completed request', 'HTTP', {
-        correlationId,
+        requestId,
         statusCode: res.statusCode,
-        durationMs
+        durationMs,
+        contentLength: res.getHeader('content-length')
       });
     });
 

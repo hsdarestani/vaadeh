@@ -5,6 +5,7 @@ import axios, { AxiosInstance } from 'axios';
 import { Queue, Worker } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductEventService } from '../event-log/product-event.service';
+import { EventLogService } from '../event-log/event-log.service';
 
 @Injectable()
 export class NotificationService {
@@ -16,7 +17,11 @@ export class NotificationService {
   private dispatcherWorker?: Worker;
   private httpClient: AxiosInstance;
 
-  constructor(private readonly prisma: PrismaService, private readonly productEvents: ProductEventService) {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly productEvents: ProductEventService,
+    private readonly events: EventLogService
+  ) {
     const customerToken = process.env.TELEGRAM_CUSTOMER_BOT_TOKEN;
     if (customerToken) {
       this.customerTelegramBot = new TelegramBot(customerToken, { polling: false });
@@ -56,13 +61,21 @@ export class NotificationService {
 
   private async trackEvent(
     eventName: 'sms_sent' | 'sms_failed' | 'telegram_sent' | 'telegram_failed',
-    payload: { userId?: string; vendorId?: string; orderId?: string }
+    payload: { userId?: string; vendorId?: string; orderId?: string; recipient?: string | number; error?: string }
   ) {
+    const actorType = payload.vendorId ? EventActorType.VENDOR : EventActorType.USER;
     await this.productEvents.track(eventName, {
-      actorType: payload.vendorId ? EventActorType.VENDOR : EventActorType.USER,
+      actorType,
       actorId: payload.vendorId ?? payload.userId,
       orderId: payload.orderId,
-      metadata: {}
+      metadata: { recipient: payload.recipient, error: payload.error }
+    });
+    await this.events.logEvent(eventName.toUpperCase(), {
+      actorType,
+      actorId: payload.vendorId ?? payload.userId,
+      orderId: payload.orderId,
+      metadata: { recipient: payload.recipient, error: payload.error },
+      entityType: 'notification'
     });
   }
 
@@ -144,12 +157,15 @@ export class NotificationService {
       this.dispatcherWorker = new Worker(
         'notification-dispatcher',
         async (job) => {
-          const { logId, channel, recipient, message, options } = job.data as {
+          const { logId, channel, recipient, message, options, orderId, userId, vendorId } = job.data as {
             logId: string;
             channel: NotificationChannel;
             recipient: string | number;
             message: string;
             options?: TelegramBot.SendMessageOptions & { target?: 'customer' | 'vendor' };
+            orderId?: string;
+            userId?: string;
+            vendorId?: string;
           };
 
           try {
@@ -172,6 +188,12 @@ export class NotificationService {
                 providerStatus: result?.providerStatus
               }
             });
+            await this.trackEvent(channel === NotificationChannel.TELEGRAM ? 'telegram_sent' : 'sms_sent', {
+              recipient,
+              orderId,
+              userId,
+              vendorId
+            });
           } catch (err) {
             await this.prisma.notificationLog.update({
               where: { id: logId },
@@ -180,6 +202,13 @@ export class NotificationService {
                 attempts: { increment: 1 },
                 lastError: err instanceof Error ? err.message : 'unknown error'
               }
+            });
+            await this.trackEvent(channel === NotificationChannel.TELEGRAM ? 'telegram_failed' : 'sms_failed', {
+              recipient,
+              orderId,
+              userId,
+              vendorId,
+              error: err instanceof Error ? err.message : 'unknown error'
             });
             throw err;
           }
@@ -194,6 +223,13 @@ export class NotificationService {
         this.logger.error(`Notification job ${job.id} failed: ${err instanceof Error ? err.message : err}`);
         if (job.attemptsMade >= (job.opts.attempts ?? 1)) {
           await this.deadLetterQueue?.add('dead-letter', { ...job.data, failedReason: err?.toString?.() });
+          await this.events.logEvent('NOTIFICATION_DEAD_LETTER', {
+            actorType: job.data?.vendorId ? EventActorType.VENDOR : EventActorType.USER,
+            actorId: job.data?.vendorId ?? job.data?.userId,
+            orderId: job.data?.orderId,
+            entityType: 'notification',
+            metadata: { channel: job.data?.channel, recipient: job.data?.recipient, error: err instanceof Error ? err.message : err }
+          });
         }
       });
       this.dispatcherWorker.on('stalled', (jobId) => {
@@ -232,7 +268,12 @@ export class NotificationService {
         where: { id: log.id },
         data: { status: NotificationStatus.SENT, attempts: 1, providerMessageId: result.providerMessageId, providerStatus: result.providerStatus }
       });
-      await this.trackEvent('telegram_sent', { userId: opts.userId, vendorId: opts.vendorId, orderId: opts.orderId });
+      await this.trackEvent('telegram_sent', {
+        userId: opts.userId,
+        vendorId: opts.vendorId,
+        orderId: opts.orderId,
+        recipient: chatId
+      });
     };
 
     if (!this.dispatcherQueue) {
@@ -246,7 +287,10 @@ export class NotificationService {
         channel: NotificationChannel.TELEGRAM,
         recipient: chatId,
         message,
-        options: { ...opts.options, target: opts.target }
+        options: { ...opts.options, target: opts.target },
+        orderId: opts.orderId,
+        userId: opts.userId,
+        vendorId: opts.vendorId
       });
     } catch (err) {
       this.logger.warn(`Falling back to direct telegram send for log ${log.id}: ${err instanceof Error ? err.message : err}`);
@@ -254,7 +298,11 @@ export class NotificationService {
     }
   }
 
-  async sendSms(phone: string, message: string, meta?: { eventName?: string; orderId?: string; userId?: string; vendorId?: string }) {
+  async sendSms(
+    phone: string,
+    message: string,
+    meta?: { eventName?: string; orderId?: string; userId?: string; vendorId?: string }
+  ) {
     const log = await this.createLog({
       channel: NotificationChannel.SMS,
       recipient: phone,
@@ -280,7 +328,9 @@ export class NotificationService {
       await this.trackEvent(result.error ? 'sms_failed' : 'sms_sent', {
         userId: meta?.userId,
         vendorId: meta?.vendorId,
-        orderId: meta?.orderId
+        orderId: meta?.orderId,
+        recipient: phone,
+        error: result.error
       });
     };
 
@@ -290,7 +340,15 @@ export class NotificationService {
     }
 
     try {
-      await this.dispatcherQueue.add('send', { logId: log.id, channel: NotificationChannel.SMS, recipient: phone, message });
+      await this.dispatcherQueue.add('send', {
+        logId: log.id,
+        channel: NotificationChannel.SMS,
+        recipient: phone,
+        message,
+        orderId: meta?.orderId,
+        userId: meta?.userId,
+        vendorId: meta?.vendorId
+      });
     } catch (err) {
       this.logger.warn(`Falling back to direct SMS send for log ${log.id}: ${err instanceof Error ? err.message : err}`);
       await sendDirect();

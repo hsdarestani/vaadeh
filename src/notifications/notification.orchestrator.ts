@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { DeliveryType, OrderStatus } from '@prisma/client';
+import { DeliveryProvider, DeliveryType, OrderStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationService } from './notification.service';
 
@@ -44,14 +44,17 @@ export class NotificationOrchestrator {
     if (!order) return;
 
     const deliveryCopy =
-      order.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
-        ? '🚕 سفارش شما خارج از محدوده است و با برچسب اسنپ (پس‌کرایه) ثبت شد.'
-        : '🚚 سفارش شما در محدوده ارسال است.';
+      order.deliveryProvider === DeliveryProvider.SNAPP
+        ? '🚕 ارسال با پیک اسنپ - هزینه ارسال پس‌کرایه است.'
+        : '🚚 ارسال داخل محدوده توسط ناوگان داخلی.';
+    const paymentCopy = order.isCOD
+      ? 'پرداخت سفارش/پیک در مقصد انجام می‌شود.'
+      : 'پرداخت آنلاین شما پس از تایید نهایی انجام خواهد شد.';
 
     const lineItems = order.items
       .map((item) => `${item.menuVariant.menuItem.name} (${item.menuVariant.code}) x${item.qty}`)
       .join('\n');
-    const customerMessage = `سفارش شما ثبت شد.\nکد سفارش: ${order.id.slice(-6)}\n${deliveryCopy}\n${lineItems}`;
+    const customerMessage = `سفارش شما ثبت شد.\nکد سفارش: ${order.id.slice(-6)}\n${deliveryCopy}\n${paymentCopy}\n${lineItems}`;
 
     if (order.user.telegramUserId) {
       await this.notifications.sendTelegram(order.user.telegramUserId, customerMessage, {
@@ -68,9 +71,11 @@ export class NotificationOrchestrator {
 
     if (order.vendor.telegramChatId) {
       const settlementCopy =
-        order.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
+        order.deliveryProvider === DeliveryProvider.SNAPP
           ? '\nاین سفارش با پیک اسنپ و پس‌کرایه است؛ هزینه پیک از مشتری دریافت می‌شود.'
-          : '';
+          : order.isCOD
+            ? '\nپرداخت در مقصد توسط مشتری انجام می‌شود.'
+            : '';
       const vendorMessage = `سفارش جدید #${order.id.slice(-6)} از ${order.user.mobile}\nمبلغ کل: ${order.totalPrice.toString()}\nآدرس: ${order.addressSnapshot?.fullAddress}\nآیتم‌ها:\n${lineItems}${settlementCopy}`;
       await this.notifications.sendTelegram(order.vendor.telegramChatId, vendorMessage, {
         target: 'vendor',
@@ -94,10 +99,10 @@ export class NotificationOrchestrator {
         `سفارش جدید #${order.id.slice(-6)} برای ${order.vendor.name} ثبت شد.`,
         { eventName: 'onOrderCreated_admin', orderId: order.id }
       );
-      if (order.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE) {
+      if (order.deliveryProvider === DeliveryProvider.SNAPP) {
         await this.notifications.sendTelegram(
           this.adminChatId,
-          `سفارش #${order.id.slice(-6)} خارج از محدوده ثبت شد و با برچسب اسنپ ارسال می‌شود.`,
+          `سفارش #${order.id.slice(-6)} با پیک اسنپ (پس‌کرایه) ثبت شد. وضعیت پیک: ${order.courierStatus}`,
           { eventName: 'onOrderCreated_admin_out_of_zone', orderId: order.id }
         );
       }

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
-import { APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AddressesModule } from './addresses/addresses.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -16,6 +17,10 @@ import { ContextLoggerInterceptor } from './logger/context-logger.interceptor';
 
 @Module({
   imports: [
+    ThrottlerModule.forRoot({
+      ttl: 60,
+      limit: 120
+    }),
     PrismaModule,
     EventLogModule,
     AuthModule,
@@ -33,6 +38,10 @@ import { ContextLoggerInterceptor } from './logger/context-logger.interceptor';
     {
       provide: APP_INTERCEPTOR,
       useClass: ContextLoggerInterceptor
+    },
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard
     }
   ]
 })
