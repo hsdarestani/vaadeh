@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import TelegramBot from 'node-telegram-bot-api';
-import { Prisma, DeliveryType } from '@prisma/client';
+import { DeliveryType } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
 import { OrdersService } from '../orders/orders.service';
 import { AddressesService } from '../addresses/addresses.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -188,7 +189,7 @@ export class CustomerBotService implements OnModuleInit {
     session.stage = 'browse_menu';
   }
 
-  private renderCart(cart: CartState, variantLookup: Record<string, { name: string; price: Prisma.Decimal; code: string }>) {
+  private renderCart(cart: CartState, variantLookup: Record<string, { name: string; price: Decimal; code: string }>) {
     const lines = Object.entries(cart).map(([id, qty]) => {
       const ref = variantLookup[id];
       if (!ref) return '';
@@ -204,7 +205,7 @@ export class CustomerBotService implements OnModuleInit {
       where: { id: { in: variantIds } },
       include: { menuItem: true }
     });
-    const lookup: Record<string, { name: string; price: Prisma.Decimal; code: string }> = {};
+    const lookup: Record<string, { name: string; price: Decimal; code: string }> = {};
     variants.forEach((v) => (lookup[v.id] = { name: v.menuItem.name, price: v.price, code: v.code }));
     const cartText = this.renderCart(session.cart, lookup);
     await this.bot?.sendMessage(chatId, cartText, {

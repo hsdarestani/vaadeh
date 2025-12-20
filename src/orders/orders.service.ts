@@ -7,9 +7,9 @@ import {
   EventActorType,
   OrderStatus,
   PaymentStatus,
-  Prisma,
   SnappRequestStatus
 } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
 import { AddressesService } from '../addresses/addresses.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationOrchestrator } from '../notifications/notification.orchestrator';
@@ -123,15 +123,15 @@ export class OrdersService {
           },
           deliveryType: matching.deliveryType,
           deliveryProvider: matching.deliveryProvider,
-          deliveryFee: new Prisma.Decimal(matching.deliveryFee),
+          deliveryFee: new Decimal(matching.deliveryFee),
           deliveryFeeEstimate:
             matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
-              ? new Prisma.Decimal(matching.deliveryFee)
+              ? new Decimal(matching.deliveryFee)
               : undefined,
           deliveryPricing: matching.pricingBreakdown,
           outOfZone: matching.outOfZone,
           courierStatus: matching.courierStatus ?? CourierStatus.PENDING,
-          totalPrice: new Prisma.Decimal(totalPrice),
+          totalPrice: new Decimal(totalPrice),
           customerNote: dto.customerNote,
           scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
           locationLat,
@@ -441,7 +441,7 @@ export class OrdersService {
     });
 
     const historyNote = `Snapp: ${status}${payload.driverName ? ` (${payload.driverName})` : ''}`;
-    await this.prisma.orderStatusHistory.create({
+    await this.prisma.orderHistory.create({
       data: { orderId: order.id, status: order.status, note: historyNote }
     });
 

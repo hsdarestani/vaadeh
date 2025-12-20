@@ -8,6 +8,7 @@ import {
   PaymentStatus,
   Prisma
 } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
 import axios from 'axios';
 import crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -94,7 +95,7 @@ export class PaymentsService {
     paymentId: string,
     orderId: string,
     message: string,
-    amount: Prisma.Decimal,
+    amount: Decimal,
     rawResponse?: Record<string, any>
   ) {
     await tx.payment.update({ where: { id: paymentId }, data: { status: PaymentStatus.FAILED } });
@@ -130,7 +131,7 @@ export class PaymentsService {
 
     const existingPayment = order.payment ?? (await this.prisma.payment.findUnique({ where: { orderId } }));
 
-    const amount = new Prisma.Decimal(order.totalPrice);
+    const amount = new Decimal(order.totalPrice);
     const trackId = existingPayment?.trackId ?? `${Date.now()}-${order.id.slice(0, 6)}`;
 
     const merchant = this.requireMerchant();
