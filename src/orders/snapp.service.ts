@@ -18,6 +18,21 @@ interface SnappWebhookPayload {
   etaMinutes?: number;
 }
 
+interface SnappEstimateResponse {
+  [key: string]: unknown;
+}
+
+interface SnappCourierResponse {
+  requestId?: string;
+  id?: string;
+  status?: string;
+  [key: string]: unknown;
+}
+
+interface SnappCancelResponse {
+  [key: string]: unknown;
+}
+
 @Injectable()
 export class SnappService {
   private readonly logger = new Logger(SnappService.name);
@@ -61,7 +76,7 @@ export class SnappService {
     }
     try {
       const response = await firstValueFrom(
-        this.http.post(
+        this.http.post<SnappEstimateResponse>(
           `${this.baseUrl}/estimates`,
           {
             origin: payload.pickup,
@@ -84,7 +99,7 @@ export class SnappService {
     }
     try {
       const response = await firstValueFrom(
-        this.http.post(
+        this.http.post<SnappCourierResponse>(
           `${this.baseUrl}/couriers`,
           {
             reference: payload.orderId,
@@ -111,7 +126,7 @@ export class SnappService {
     }
     try {
       const response = await firstValueFrom(
-        this.http.get(`${this.baseUrl}/couriers/${requestId}`, { headers: this.authHeaders() })
+        this.http.get<SnappCourierResponse>(`${this.baseUrl}/couriers/${requestId}`, { headers: this.authHeaders() })
       );
       const mapped = this.mapSnappStatus(response.data?.status);
       return { status: mapped.status, courierStatus: mapped.courierStatus, raw: response.data };
@@ -127,7 +142,9 @@ export class SnappService {
       return { cancelled: false };
     }
     try {
-      await firstValueFrom(this.http.post(`${this.baseUrl}/couriers/${requestId}/cancel`, {}, { headers: this.authHeaders() }));
+      await firstValueFrom(
+        this.http.post<SnappCancelResponse>(`${this.baseUrl}/couriers/${requestId}/cancel`, {}, { headers: this.authHeaders() })
+      );
       return { cancelled: true };
     } catch (error: any) {
       this.logger.error('Snapp cancel failed', error?.response?.data || error?.message);

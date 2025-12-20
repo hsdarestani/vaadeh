@@ -6,6 +6,7 @@ import {
   DeliveryType,
   EventActorType,
   OrderStatus,
+  Prisma,
   PaymentStatus,
   SnappRequestStatus
 } from '@prisma/client';
@@ -66,7 +67,7 @@ export class OrdersService {
     }
 
     const vendor = variants[0].menuItem.vendor;
-    const sameVendor = variants.every((v) => v.menuItem.vendorId === vendor.id);
+    const sameVendor = variants.every((variant: (typeof variants)[number]) => variant.menuItem.vendorId === vendor.id);
     if (!sameVendor) {
       throw new BadRequestException('تمام آیتم‌های سبد باید از یک وندور باشند');
     }
@@ -110,7 +111,7 @@ export class OrdersService {
         : 'در محدوده ارسال داخلی';
     const paymentNote = isCOD ? 'پرداخت پیک/سفارش در مقصد توسط مشتری (تعهد پس‌کرایه)' : 'پرداخت آنلاین مورد انتظار';
 
-    const order = await this.prisma.$transaction(async (tx) => {
+    const order = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const created = await tx.order.create({
         data: {
           userId,
@@ -146,7 +147,7 @@ export class OrdersService {
               : undefined,
           items: {
             create: dto.items.map((item) => {
-              const variant = variants.find((v) => v.id === item.menuVariantId) as (typeof variants)[0];
+              const variant = variants.find((entry: (typeof variants)[number]) => entry.id === item.menuVariantId) as (typeof variants)[0];
               return {
                 qty: item.qty,
                 unitPrice: variant.price,

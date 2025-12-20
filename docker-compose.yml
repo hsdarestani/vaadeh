@@ -94,8 +94,6 @@ services:
     volumes:
       - letsencrypt:/etc/letsencrypt
       - certbot_challenges:/var/www/certbot
-    ports:
-      - '80:80'
     command: >-
       sh -c "if [ ! -f /etc/letsencrypt/live/${DOMAIN}/fullchain.pem ]; then certbot certonly --standalone --non-interactive --agree-tos --email ${LETSENCRYPT_EMAIL} -d ${DOMAIN} -d www.${DOMAIN} -d api.${DOMAIN} -d app.${DOMAIN} -d admin.${DOMAIN}; fi"
     restart: 'no'

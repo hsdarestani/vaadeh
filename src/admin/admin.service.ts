@@ -253,7 +253,7 @@ export class AdminService {
       this.prisma.order.count({ where: { status: { in: [OrderStatus.CANCELLED, OrderStatus.VENDOR_REJECTED] } } })
     ]);
 
-    const vendorLookup = new Map(vendorNames.map((v) => [v.id, v.name]));
+    const vendorLookup = new Map(vendorNames.map((vendor: (typeof vendorNames)[number]) => [vendor.id, vendor.name]));
 
     const ordersPerDay: Record<string, number> = {};
     for (let i = 0; i < 7; i += 1) {
@@ -321,7 +321,7 @@ export class AdminService {
       }
     };
 
-    ordersWithHistory.forEach((order) => {
+    ordersWithHistory.forEach((order: (typeof ordersWithHistory)[number]) => {
       const bucketKey = order.createdAt.toISOString().slice(0, 10);
       const bucket =
         dailyBuckets[bucketKey] ??
@@ -417,9 +417,12 @@ export class AdminService {
         }
       }));
 
-    const accepted = ordersWithHistory.filter((order) => order.status === OrderStatus.VENDOR_ACCEPTED).length;
+    const accepted = ordersWithHistory.filter(
+      (order: (typeof ordersWithHistory)[number]) => order.status === OrderStatus.VENDOR_ACCEPTED
+    ).length;
     const placed = ordersWithHistory.filter(
-      (order) => order.status !== OrderStatus.CANCELLED && order.status !== OrderStatus.VENDOR_REJECTED
+      (order: (typeof ordersWithHistory)[number]) =>
+        order.status !== OrderStatus.CANCELLED && order.status !== OrderStatus.VENDOR_REJECTED
     ).length;
 
     return {
@@ -535,7 +538,7 @@ export class AdminService {
             e.vendorId ?? '',
             JSON.stringify(e.metadata ?? {})
           ]
-            .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+            .map((value: string) => `"${String(value).replace(/"/g, '""')}"`)
             .join(',')
         )
         .join('\n');

@@ -125,7 +125,9 @@ export class CustomerBotService implements OnModuleInit {
       return;
     }
 
-    const keyboard = addresses.map((a) => [{ text: `${a.title}${a.isDefault ? ' ✅' : ''}`, callback_data: `address:${a.id}` }]);
+    const keyboard = addresses.map((address) => [
+      { text: `${address.title}${address.isDefault ? ' ✅' : ''}`, callback_data: `address:${address.id}` }
+    ]);
     keyboard.push([{ text: '➕ افزودن آدرس جدید', callback_data: 'address:add' }]);
     await this.bot?.sendMessage(chatId, 'آدرس ارسال را انتخاب کنید:', {
       reply_markup: { inline_keyboard: keyboard }
@@ -137,7 +139,9 @@ export class CustomerBotService implements OnModuleInit {
     if (!session.addressSnapshot) return;
     const vendors = await this.prisma.vendor.findMany({ where: { isActive: true }, orderBy: { name: 'asc' }, take: 10 });
     session.stage = 'select_vendor';
-    const keyboard = vendors.map((v) => [{ text: v.name, callback_data: `vendor:${v.id}` }]);
+    const keyboard = vendors.map((vendor: (typeof vendors)[number]) => [
+      { text: vendor.name, callback_data: `vendor:${vendor.id}` }
+    ]);
     await this.bot?.sendMessage(
       chatId,
       'رستوران/وندر مورد نظر را انتخاب کنید (سبد تنها برای یک وندور است):',
@@ -148,7 +152,9 @@ export class CustomerBotService implements OnModuleInit {
   }
 
   private buildMenuKeyboard(variants: { id: string; label: string }[], page: number, hasNext: boolean) {
-    const buttons = variants.map((v) => [{ text: v.label, callback_data: `add:${v.id}` }]);
+    const buttons = variants.map((variant: (typeof variants)[number]) => [
+      { text: variant.label, callback_data: `add:${variant.id}` }
+    ]);
     const footer: TelegramBot.InlineKeyboardButton[] = [];
     if (page > 0) footer.push({ text: '⬅️ قبلی', callback_data: `menu:prev:${page - 1}` });
     if (hasNext) footer.push({ text: '➡️ بعدی', callback_data: `menu:next:${page + 1}` });
@@ -206,14 +212,16 @@ export class CustomerBotService implements OnModuleInit {
       include: { menuItem: true }
     });
     const lookup: Record<string, { name: string; price: Decimal; code: string }> = {};
-    variants.forEach((v) => (lookup[v.id] = { name: v.menuItem.name, price: v.price, code: v.code }));
+    variants.forEach((variant: (typeof variants)[number]) => {
+      lookup[variant.id] = { name: variant.menuItem.name, price: variant.price, code: variant.code };
+    });
     const cartText = this.renderCart(session.cart, lookup);
     await this.bot?.sendMessage(chatId, cartText, {
       reply_markup: {
         inline_keyboard: [
-          ...variants.map((v) => [
-            { text: `➕ ${v.menuItem.name}`, callback_data: `add:${v.id}` },
-            { text: '➖', callback_data: `remove:${v.id}` }
+          ...variants.map((variant: (typeof variants)[number]) => [
+            { text: `➕ ${variant.menuItem.name}`, callback_data: `add:${variant.id}` },
+            { text: '➖', callback_data: `remove:${variant.id}` }
           ]),
           [{ text: 'ادامه ➡️', callback_data: 'cart:checkout' }]
         ]
@@ -551,12 +559,12 @@ export class CustomerBotService implements OnModuleInit {
   private registerHandlers() {
     if (!this.bot) return;
 
-    this.bot.onText(/\/start/, async (msg) => {
+    this.bot.onText(/\/start/, async (msg: TelegramBot.Message) => {
       await this.ensureLinked(msg.chat.id);
       await this.renderMainMenu(msg.chat.id);
     });
 
-    this.bot.on('callback_query', async (query) => {
+    this.bot.on('callback_query', async (query: TelegramBot.CallbackQuery) => {
       try {
         await this.handleCallback(query);
       } catch (err) {
@@ -565,7 +573,7 @@ export class CustomerBotService implements OnModuleInit {
       }
     });
 
-    this.bot.on('message', async (msg) => {
+    this.bot.on('message', async (msg: TelegramBot.Message) => {
       if (msg.location) {
         await this.handleLocation(msg.chat.id, msg.location);
         return;
