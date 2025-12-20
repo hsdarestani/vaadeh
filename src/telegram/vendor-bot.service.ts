@@ -71,7 +71,7 @@ export class VendorBotService implements OnModuleInit {
       });
     };
 
-    this.bot.on('callback_query', async (query) => {
+    this.bot.on('callback_query', async (query: TelegramBot.CallbackQuery) => {
       if (!query.data || !query.message) return;
       const [, orderId, action] = query.data.split(':');
 
@@ -114,7 +114,7 @@ export class VendorBotService implements OnModuleInit {
       }
     });
 
-    this.bot.on('message', async (msg) => {
+    this.bot.on('message', async (msg: TelegramBot.Message) => {
       if (!msg.text || msg.text.startsWith('/')) return;
       const vendor = await this.orders.getVendorByChatId(msg.chat.id);
       const pendingRejection = this.pendingRejections.get(msg.chat.id);
@@ -169,7 +169,10 @@ export class VendorBotService implements OnModuleInit {
             break;
           }
           const summary = recent
-            .map((o) => `#${o.id.slice(-6)} | ${o.user.mobile} | ${o.status} | ${new Date(o.createdAt).toLocaleString('fa-IR')}`)
+            .map(
+              (order: (typeof recent)[number]) =>
+                `#${order.id.slice(-6)} | ${order.user.mobile} | ${order.status} | ${new Date(order.createdAt).toLocaleString('fa-IR')}`
+            )
             .join('\n');
           await this.bot?.sendMessage(msg.chat.id, summary);
           break;

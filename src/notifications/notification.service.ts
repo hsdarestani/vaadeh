@@ -45,7 +45,7 @@ export class NotificationService {
     userId?: string;
     vendorId?: string;
   }) {
-    return this.prisma.notificationLog.create({
+    return this.prisma.notification.create({
       data: {
         channel: data.channel,
         recipient: data.recipient.toString(),
@@ -178,7 +178,7 @@ export class NotificationService {
               throw new Error((result as any).error);
             }
 
-            await this.prisma.notificationLog.update({
+            await this.prisma.notification.update({
               where: { id: logId },
               data: {
                 status: NotificationStatus.SENT,
@@ -195,7 +195,7 @@ export class NotificationService {
               vendorId
             });
           } catch (err) {
-            await this.prisma.notificationLog.update({
+            await this.prisma.notification.update({
               where: { id: logId },
               data: {
                 status: NotificationStatus.FAILED,
@@ -264,7 +264,7 @@ export class NotificationService {
 
     const sendDirect = async () => {
       const result = await this.sendTelegramDirect(chatId, message, { ...opts.options, target: opts.target });
-      await this.prisma.notificationLog.update({
+      await this.prisma.notification.update({
         where: { id: log.id },
         data: { status: NotificationStatus.SENT, attempts: 1, providerMessageId: result.providerMessageId, providerStatus: result.providerStatus }
       });
@@ -315,7 +315,7 @@ export class NotificationService {
 
     const sendDirect = async () => {
       const result = await this.sendSmsDirect(phone, message);
-      await this.prisma.notificationLog.update({
+      await this.prisma.notification.update({
         where: { id: log.id },
         data: {
           status: result.error ? NotificationStatus.FAILED : NotificationStatus.SENT,

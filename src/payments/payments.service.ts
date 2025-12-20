@@ -8,6 +8,7 @@ import {
   PaymentStatus,
   Prisma
 } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
 import axios from 'axios';
 import crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -94,7 +95,7 @@ export class PaymentsService {
     paymentId: string,
     orderId: string,
     message: string,
-    amount: Prisma.Decimal,
+    amount: Decimal,
     rawResponse?: Record<string, any>
   ) {
     await tx.payment.update({ where: { id: paymentId }, data: { status: PaymentStatus.FAILED } });
@@ -130,7 +131,7 @@ export class PaymentsService {
 
     const existingPayment = order.payment ?? (await this.prisma.payment.findUnique({ where: { orderId } }));
 
-    const amount = new Prisma.Decimal(order.totalPrice);
+    const amount = new Decimal(order.totalPrice);
     const trackId = existingPayment?.trackId ?? `${Date.now()}-${order.id.slice(0, 6)}`;
 
     const merchant = this.requireMerchant();
@@ -148,7 +149,7 @@ export class PaymentsService {
       }
     } catch (err) {
       const message = err instanceof BadRequestException ? err.message : 'در حال حاضر امکان اتصال به درگاه نیست';
-      const persisted = await this.prisma.$transaction(async (tx) => {
+      const persisted = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         const paymentRecord = await tx.payment.upsert({
           where: { orderId },
           create: {
@@ -174,7 +175,7 @@ export class PaymentsService {
 
     const effectiveTrackId = responseData?.trackId ?? trackId;
 
-    const payment = await this.prisma.$transaction(async (tx) => {
+    const payment = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const persisted = await tx.payment.upsert({
         where: { orderId },
         create: {
@@ -265,7 +266,7 @@ export class PaymentsService {
     const success = providerOk && amountMatches && orderMatches;
     const verifiedAt = success ? new Date() : undefined;
 
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const latest = await tx.payment.findUnique({ where: { id: payment.id }, include: { order: true } });
       if (!latest) {
         throw new NotFoundException('Payment not found');
@@ -399,7 +400,7 @@ export class PaymentsService {
     }
 
     if (!orderMatches || !amountMatches) {
-      await this.prisma.$transaction(async (tx) => {
+      await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         await tx.payment.update({ where: { id: payment.id }, data: { status: PaymentStatus.FAILED } });
         if (payment.orderId) {
           await tx.order.update({ where: { id: payment.orderId }, data: { paymentStatus: PaymentStatus.FAILED } });
@@ -411,7 +412,7 @@ export class PaymentsService {
 
     const successFlag = (payload?.success === '1' || payload?.success === 1 || payload?.result === 100) && amountMatches;
     if (!successFlag) {
-      await this.prisma.$transaction(async (tx) => {
+      await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         await tx.payment.update({ where: { id: payment.id }, data: { status: PaymentStatus.FAILED } });
         if (payment.orderId) {
           await tx.order.update({ where: { id: payment.orderId }, data: { paymentStatus: PaymentStatus.FAILED } });

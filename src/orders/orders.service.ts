@@ -6,10 +6,11 @@ import {
   DeliveryType,
   EventActorType,
   OrderStatus,
-  PaymentStatus,
   Prisma,
+  PaymentStatus,
   SnappRequestStatus
 } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
 import { AddressesService } from '../addresses/addresses.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationOrchestrator } from '../notifications/notification.orchestrator';
@@ -66,7 +67,7 @@ export class OrdersService {
     }
 
     const vendor = variants[0].menuItem.vendor;
-    const sameVendor = variants.every((v) => v.menuItem.vendorId === vendor.id);
+    const sameVendor = variants.every((variant: (typeof variants)[number]) => variant.menuItem.vendorId === vendor.id);
     if (!sameVendor) {
       throw new BadRequestException('تمام آیتم‌های سبد باید از یک وندور باشند');
     }
@@ -110,7 +111,7 @@ export class OrdersService {
         : 'در محدوده ارسال داخلی';
     const paymentNote = isCOD ? 'پرداخت پیک/سفارش در مقصد توسط مشتری (تعهد پس‌کرایه)' : 'پرداخت آنلاین مورد انتظار';
 
-    const order = await this.prisma.$transaction(async (tx) => {
+    const order = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const created = await tx.order.create({
         data: {
           userId,
@@ -123,15 +124,15 @@ export class OrdersService {
           },
           deliveryType: matching.deliveryType,
           deliveryProvider: matching.deliveryProvider,
-          deliveryFee: new Prisma.Decimal(matching.deliveryFee),
+          deliveryFee: new Decimal(matching.deliveryFee),
           deliveryFeeEstimate:
             matching.deliveryType === DeliveryType.SNAPP_COURIER_OUT_OF_ZONE
-              ? new Prisma.Decimal(matching.deliveryFee)
+              ? new Decimal(matching.deliveryFee)
               : undefined,
           deliveryPricing: matching.pricingBreakdown,
           outOfZone: matching.outOfZone,
           courierStatus: matching.courierStatus ?? CourierStatus.PENDING,
-          totalPrice: new Prisma.Decimal(totalPrice),
+          totalPrice: new Decimal(totalPrice),
           customerNote: dto.customerNote,
           scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
           locationLat,
@@ -146,7 +147,7 @@ export class OrdersService {
               : undefined,
           items: {
             create: dto.items.map((item) => {
-              const variant = variants.find((v) => v.id === item.menuVariantId) as (typeof variants)[0];
+              const variant = variants.find((entry: (typeof variants)[number]) => entry.id === item.menuVariantId) as (typeof variants)[0];
               return {
                 qty: item.qty,
                 unitPrice: variant.price,
@@ -441,7 +442,7 @@ export class OrdersService {
     });
 
     const historyNote = `Snapp: ${status}${payload.driverName ? ` (${payload.driverName})` : ''}`;
-    await this.prisma.orderStatusHistory.create({
+    await this.prisma.orderHistory.create({
       data: { orderId: order.id, status: order.status, note: historyNote }
     });
 

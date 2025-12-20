@@ -1,4 +1,5 @@
-import { Injectable, TooManyRequestsException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { ThrottlerException } from '@nestjs/throttler';
 
 type Bucket = { remaining: number; resetAt: number };
 
@@ -16,7 +17,7 @@ export class RateLimitService {
     }
 
     if (current.remaining <= 0) {
-      throw new TooManyRequestsException('Rate limit exceeded');
+      throw new ThrottlerException('Rate limit exceeded');
     }
 
     this.buckets.set(key, { ...current, remaining: current.remaining - 1 });

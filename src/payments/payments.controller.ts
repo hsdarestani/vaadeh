@@ -16,13 +16,13 @@ export class PaymentsController {
   }
 
   @Post('zibal/verify')
-  @Throttle(6, 60)
+  @Throttle({ limit: 6, ttl: 60 })
   verify(@Body() body: { trackId: string; orderId?: string }, @Headers() headers: Record<string, string>) {
     return this.payments.verifyZibal(body.trackId, body, headers);
   }
 
   @All('zibal/callback')
-  @Throttle(3, 60)
+  @Throttle({ limit: 3, ttl: 60 })
   callback(
     @Body() body: any,
     @Query() query: any,

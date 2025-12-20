@@ -1,4 +1,13 @@
-import { PrismaClient, DeliveryType, OrderStatus, PaymentProvider, PaymentStatus, UserRole, Prisma, DeliverySettlementType } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
+import {
+  PrismaClient,
+  DeliveryType,
+  OrderStatus,
+  PaymentProvider,
+  PaymentStatus,
+  UserRole,
+  DeliverySettlementType
+} from '@prisma/client';
 import { config } from 'dotenv';
 
 config();
@@ -50,10 +59,10 @@ async function main() {
   });
 
   const regularVariant = await prisma.menuVariant.create({
-    data: { menuItemId: sandwich.id, code: 'REG', price: new Prisma.Decimal(250000) }
+    data: { menuItemId: sandwich.id, code: 'REG', price: new Decimal(250000) }
   });
   const largeVariant = await prisma.menuVariant.create({
-    data: { menuItemId: sandwich.id, code: 'LG', price: new Prisma.Decimal(320000) }
+    data: { menuItemId: sandwich.id, code: 'LG', price: new Decimal(320000) }
   });
 
   const order = await prisma.order.create({
@@ -68,10 +77,10 @@ async function main() {
       },
       deliveryType: DeliveryType.IN_ZONE_INTERNAL,
       deliverySettlementType: DeliverySettlementType.PREPAID,
-      deliveryFee: new Prisma.Decimal(0),
-      deliveryFeeEstimate: new Prisma.Decimal(0),
-      deliveryFeeFinal: new Prisma.Decimal(0),
-      totalPrice: new Prisma.Decimal(570000),
+      deliveryFee: new Decimal(0),
+      deliveryFeeEstimate: new Decimal(0),
+      deliveryFeeFinal: new Decimal(0),
+      totalPrice: new Decimal(570000),
       status: OrderStatus.DELIVERED,
       paymentStatus: PaymentStatus.PAID,
       locationLat: address.lat,
@@ -99,7 +108,7 @@ async function main() {
       userId: customer.id,
       provider: PaymentProvider.ZIBAL,
       trackId: `seed-${Date.now()}`,
-      amount: new Prisma.Decimal(570000),
+      amount: new Decimal(570000),
       status: PaymentStatus.PAID,
       verifiedAt: new Date()
     }

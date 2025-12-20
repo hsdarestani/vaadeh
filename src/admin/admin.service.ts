@@ -9,6 +9,7 @@ import {
   PaymentStatus,
   Prisma
 } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationOrchestrator } from '../notifications/notification.orchestrator';
 import { NotificationService } from '../notifications/notification.service';
@@ -79,7 +80,7 @@ export class AdminService {
       data: {
         menuItemId,
         code: dto.code,
-        price: new Prisma.Decimal(dto.price)
+        price: new Decimal(dto.price)
       }
     });
   }
@@ -89,7 +90,7 @@ export class AdminService {
       where: { id },
       data: {
         code: dto.code,
-        price: dto.price !== undefined ? new Prisma.Decimal(dto.price) : undefined,
+        price: dto.price !== undefined ? new Decimal(dto.price) : undefined,
         menuItemId: dto.menuItemId
       }
     });
@@ -110,9 +111,9 @@ export class AdminService {
     }
 
     const data: Prisma.OrderUpdateInput = {};
-    if (dto.totalPrice !== undefined) data.totalPrice = new Prisma.Decimal(dto.totalPrice);
-    if (dto.deliveryFee !== undefined) data.deliveryFee = new Prisma.Decimal(dto.deliveryFee);
-    if (dto.deliveryFeeFinal !== undefined) data.deliveryFeeFinal = new Prisma.Decimal(dto.deliveryFeeFinal);
+    if (dto.totalPrice !== undefined) data.totalPrice = new Decimal(dto.totalPrice);
+    if (dto.deliveryFee !== undefined) data.deliveryFee = new Decimal(dto.deliveryFee);
+    if (dto.deliveryFeeFinal !== undefined) data.deliveryFeeFinal = new Decimal(dto.deliveryFeeFinal);
     if (dto.adminNote !== undefined) data.adminNote = dto.adminNote;
     if (dto.courierReference !== undefined) data.courierReference = dto.courierReference;
     if (dto.courierStatus !== undefined) data.courierStatus = dto.courierStatus;
@@ -252,7 +253,7 @@ export class AdminService {
       this.prisma.order.count({ where: { status: { in: [OrderStatus.CANCELLED, OrderStatus.VENDOR_REJECTED] } } })
     ]);
 
-    const vendorLookup = new Map(vendorNames.map((v) => [v.id, v.name]));
+    const vendorLookup = new Map(vendorNames.map((vendor: (typeof vendorNames)[number]) => [vendor.id, vendor.name]));
 
     const ordersPerDay: Record<string, number> = {};
     for (let i = 0; i < 7; i += 1) {
@@ -320,7 +321,7 @@ export class AdminService {
       }
     };
 
-    ordersWithHistory.forEach((order) => {
+    ordersWithHistory.forEach((order: (typeof ordersWithHistory)[number]) => {
       const bucketKey = order.createdAt.toISOString().slice(0, 10);
       const bucket =
         dailyBuckets[bucketKey] ??
@@ -416,9 +417,12 @@ export class AdminService {
         }
       }));
 
-    const accepted = ordersWithHistory.filter((order) => order.status === OrderStatus.VENDOR_ACCEPTED).length;
+    const accepted = ordersWithHistory.filter(
+      (order: (typeof ordersWithHistory)[number]) => order.status === OrderStatus.VENDOR_ACCEPTED
+    ).length;
     const placed = ordersWithHistory.filter(
-      (order) => order.status !== OrderStatus.CANCELLED && order.status !== OrderStatus.VENDOR_REJECTED
+      (order: (typeof ordersWithHistory)[number]) =>
+        order.status !== OrderStatus.CANCELLED && order.status !== OrderStatus.VENDOR_REJECTED
     ).length;
 
     return {
@@ -467,12 +471,12 @@ export class AdminService {
   }
 
   notificationLog() {
-    return this.prisma.notificationLog.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
+    return this.prisma.notification.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
   }
 
   async notificationHealth() {
     const [counts, queue] = await Promise.all([
-      this.prisma.notificationLog.groupBy({
+      this.prisma.notification.groupBy({
         by: ['channel', 'status'],
         _count: { _all: true }
       }),
@@ -534,7 +538,7 @@ export class AdminService {
             e.vendorId ?? '',
             JSON.stringify(e.metadata ?? {})
           ]
-            .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+            .map((value: string) => `"${String(value).replace(/"/g, '""')}"`)
             .join(',')
         )
         .join('\n');

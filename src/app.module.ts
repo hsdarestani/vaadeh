@@ -19,7 +19,7 @@ import { ContextLoggerInterceptor } from './logger/context-logger.interceptor';
   imports: [
     ThrottlerModule.forRoot({
       ttl: 60,
-      limit: 120
+      limit: 100
     }),
     PrismaModule,
     EventLogModule,
