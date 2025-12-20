@@ -1,4 +1,5 @@
-import { Injectable, TooManyRequestsException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { ThrottlerException } from '@nestjs/throttler';
 import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'crypto';
 import { RedisService } from '../redis/redis.service';
 
@@ -46,7 +47,7 @@ export class OtpService {
     }
 
     if (count > this.maxAttempts) {
-      throw new TooManyRequestsException('OTP requests are temporarily limited. Please wait a bit.');
+      throw new ThrottlerException('OTP requests are temporarily limited. Please wait a bit.');
     }
   }
 

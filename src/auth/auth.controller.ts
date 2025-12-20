@@ -30,25 +30,25 @@ export class AuthController {
   }
 
   @Post('request-otp')
-  @Throttle(2, 60)
+  @Throttle({ limit: 2, ttl: 60 })
   requestOtp(@Body() dto: RequestOtpDto) {
     return this.auth.requestOtp(dto.mobile);
   }
 
   @Post('admin/request-otp')
-  @Throttle(2, 60)
+  @Throttle({ limit: 2, ttl: 60 })
   requestAdminOtp(@Body() dto: RequestOtpDto) {
     return this.auth.requestAdminOtp(dto.mobile);
   }
 
   @Post('verify-otp')
-  @Throttle(4, 60)
+  @Throttle({ limit: 4, ttl: 60 })
   verifyOtp(@Body() dto: VerifyOtpDto) {
     return this.auth.verifyOtp(dto.mobile, dto.code);
   }
 
   @Post('web/verify-otp')
-  @Throttle(4, 60)
+  @Throttle({ limit: 4, ttl: 60 })
   async verifyOtpForWeb(@Body() dto: VerifyOtpDto, @Res({ passthrough: true }) res: Response) {
     const tokens = await this.auth.verifyOtp(dto.mobile, dto.code);
     this.setCustomerCookies(res, tokens);
